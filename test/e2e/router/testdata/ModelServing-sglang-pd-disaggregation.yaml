@@ -26,7 +26,6 @@ spec:
                     value: "Qwen/Qwen3-8B"
                 ports:
                   - containerPort: 30000
-                  - containerPort: 8998
         workerReplicas: 0
       - name: decode
         replicas: 1
@@ -46,5 +45,4 @@ spec:
                     value: "Qwen/Qwen3-8B"
                 ports:
                   - containerPort: 30000
-                  - containerPort: 8998
         workerReplicas: 0
