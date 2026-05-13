@@ -62,8 +62,12 @@ func NewMetricCollector(target *v1alpha1.Target, binding *v1alpha1.AutoscalingPo
 }
 
 type HistogramInfo struct {
-	PodStartTime *metav1.Time
-	HistogramMap map[string]*histogram.Snapshot
+	PodStartTime    *metav1.Time
+	HistogramMap    map[string]*histogram.Snapshot
+	// CounterMap stores cumulative counter values observed at the last scrape for this pod
+	CounterMap      map[string]float64
+	// ScrapeTimestamp is the timestamp (milliseconds) when the counters/histograms were scraped
+	ScrapeTimestamp int64
 }
 
 type Scope struct {
@@ -130,7 +134,7 @@ func (collector *MetricCollector) UpdateMetrics(ctx context.Context, podLister l
 
 func (collector *MetricCollector) fetchMetricsFromPods(ctx context.Context, pods []*corev1.Pod, currentHistograms *map[string]HistogramInfo) InstanceInfo {
 	instanceInfo := InstanceInfo{true, false, make(algorithm.Metrics)}
-	pastHistograms, ok := collector.PastHistograms.GetLastUnfreshSnapshot()
+	pastHistograms, _, ok := collector.PastHistograms.GetLastUnfreshSnapshotWithTimestamp()
 	if !ok {
 		pastHistograms = make(map[string]HistogramInfo)
 	}
@@ -142,13 +146,25 @@ func (collector *MetricCollector) fetchMetricsFromPods(ctx context.Context, pods
 
 			pastValue, ok := pastHistograms[pod.Name]
 			var pastHistogramMap map[string]*histogram.Snapshot
+			var pastCounterMap map[string]float64
+			var pastScrapeTimestamp int64
 			if !ok || pod.Status.StartTime == nil || pastValue.PodStartTime == nil || !pod.Status.StartTime.Equal(pastValue.PodStartTime) {
 				pastHistogramMap = make(map[string]*histogram.Snapshot)
+				pastCounterMap = make(map[string]float64)
+				pastScrapeTimestamp = 0
 			} else {
 				pastHistogramMap = pastValue.HistogramMap
+				// CounterMap and ScrapeTimestamp may be missing on older snapshots
+				if pastValue.CounterMap == nil {
+					pastCounterMap = make(map[string]float64)
+				} else {
+					pastCounterMap = pastValue.CounterMap
+				}
+				pastScrapeTimestamp = pastValue.ScrapeTimestamp
 			}
 
 			currentHistogramMap := make(map[string]*histogram.Snapshot)
+			currentCounterMap := make(map[string]float64)
 			ip := pod.Status.PodIP
 			podCtx, cancel := context.WithTimeout(ctx, util.AutoscaleCtxTimeoutSeconds*time.Second)
 			defer cancel()
@@ -172,17 +188,19 @@ func (collector *MetricCollector) fetchMetricsFromPods(ctx context.Context, pods
 				return
 			}
 			result := string(bodyStr)
-			collector.processPrometheusString(result, pastHistogramMap, currentHistogramMap, instanceInfo.MetricsMap)
+			collector.processPrometheusString(result, pastHistogramMap, pastCounterMap, currentHistogramMap, currentCounterMap, pastScrapeTimestamp, instanceInfo.MetricsMap)
 			(*currentHistograms)[pod.Name] = HistogramInfo{
 				PodStartTime: pod.Status.StartTime,
 				HistogramMap: currentHistogramMap,
+				CounterMap:   currentCounterMap,
+				ScrapeTimestamp: util.GetCurrentTimestamp(),
 			}
 		}()
 	}
 	return instanceInfo
 }
 
-func (collector *MetricCollector) processPrometheusString(metricStr string, pastHistograms map[string]*histogram.Snapshot, currentHistograms map[string]*histogram.Snapshot, instanceMetricMap algorithm.Metrics) {
+func (collector *MetricCollector) processPrometheusString(metricStr string, pastHistograms map[string]*histogram.Snapshot, pastCounters map[string]float64, currentHistograms map[string]*histogram.Snapshot, currentCounters map[string]float64, pastScrapeTimestamp int64, instanceMetricMap algorithm.Metrics) {
 	reader := strings.NewReader(metricStr)
 	decoder := expfmt.NewDecoder(reader, expfmt.NewFormat(expfmt.TypeTextPlain))
 	for {
@@ -208,7 +226,26 @@ func (collector *MetricCollector) processPrometheusString(metricStr string, past
 		metric := mf.Metric[0]
 		switch mf.GetType() {
 		case io_prometheus_client.MetricType_COUNTER:
-			addMetric(instanceMetricMap, mf.GetName(), metric.GetCounter().GetValue())
+			cur := metric.GetCounter().GetValue()
+			currentCounters[mf.GetName()] = cur
+
+			// compute rate = (cur - prev) / elapsed_seconds
+			rate := 0.0
+			now := util.GetCurrentTimestamp()
+			if pastCounters != nil && pastScrapeTimestamp > 0 {
+				if prev, ok := pastCounters[mf.GetName()]; ok {
+					if cur < prev {
+						// counter reset
+						rate = 0
+					} else {
+						elapsedSec := float64(now-pastScrapeTimestamp) / 1000.0
+						if elapsedSec > 0 {
+							rate = (cur - prev) / elapsedSec
+						}
+					}
+				}
+			}
+			addMetric(instanceMetricMap, mf.GetName(), rate)
 		case io_prometheus_client.MetricType_GAUGE:
 			addMetric(instanceMetricMap, mf.GetName(), metric.GetGauge().GetValue())
 		case io_prometheus_client.MetricType_HISTOGRAM:
