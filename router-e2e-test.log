@@ -1,0 +1,62 @@
+Installing kthena: helm install kthena /home/cybernet/oss/kthena/charts/kthena --namespace dev --create-namespace --set workload.enabled=true --set networking.enabled=true --set networking.kthenaRouter.gatewayAPI.enabled=false --set networking.kthenaRouter.gatewayAPI.inferenceExtension=false --set networking.kthenaRouter.image.tag=latest --set networking.webhook.image.tag=latest --set workload.controllerManager.image.tag=latest --set workload.controllerManager.downloaderImage.tag=latest --set workload.controllerManager.runtimeImage.tag=latest
+NAME: kthena
+LAST DEPLOYED: Fri May 15 01:16:34 2026
+NAMESPACE: dev
+STATUS: deployed
+REVISION: 1
+DESCRIPTION: Install complete
+TEST SUITE: None
+Waiting for kthena pods to be ready...
+pod/kthena-controller-manager-68b485fb87-knc7m condition met
+pod/kthena-router-8bb575c46-57ssk condition met
+Setting up port-forward to router service...
+Creating test namespace: kthena-e2e-router-pgbfa
+Setting up common components in namespace: kthena-e2e-router-pgbfa
+Deploying LLM Mock DS1.5B Deployment...
+Deploying LLM Mock DS7B Deployment...
+Deploying SGLang Mock Deployment...
+Waiting for deployments to be ready...
+Waiting for kthena-router validating webhook to accept requests...
+Router validating webhook is ready
+Deploying ModelServer DS1.5B...
+Deploying ModelServer DS7B...
+Deploying ModelServer SGLang...
+Common components deployed successfully
+=== RUN   TestKthenaRouterValidatingWebhook
+    webhook_test.go:165: [TEST] ╔════════════════════════════════════════════════════════════╗
+    webhook_test.go:166: [TEST] ║ TestKthenaRouterValidatingWebhook                         ║
+    webhook_test.go:167: [TEST] ╚════════════════════════════════════════════════════════════╝
+    webhook_test.go:168: [TEST] Start Time: 2026-05-15T01:16:51.078170863+05:30
+    webhook_test.go:169: [TEST] Test Namespace: kthena-e2e-router-pgbfa
+    webhook_test.go:171: [TEST] ┌─ STEP 1/3: Wait for router validating webhook readiness
+    webhook_test.go:172: [WEBHOOK_READINESS] ╔════════════════════════════════════════════════════════════╗
+    webhook_test.go:172: [WEBHOOK_READINESS] ║ Waiting for kthena-router validating webhook              ║
+    webhook_test.go:172: [WEBHOOK_READINESS] ╚════════════════════════════════════════════════════════════╝
+    webhook_test.go:172: [WEBHOOK_READINESS] Namespace: kthena-e2e-router-pgbfa
+    webhook_test.go:172: [WEBHOOK_READINESS] Timeout: 2m0s
+    webhook_test.go:172: [WEBHOOK_READINESS] Poll Interval: 2s
+    webhook_test.go:94: [WEBHOOK_READINESS] ┌─ Attempt 1 | elapsed=0s
+    webhook_test.go:95: [WEBHOOK_READINESS] │ Probe ModelRoute: kthena-e2e-router-pgbfa/webhook-ready-probe-94lvf
+    webhook_test.go:135: [WEBHOOK_READINESS] │ Result: webhook accepted DryRun request
+    webhook_test.go:136: [WEBHOOK_READINESS] └─ Ready after 1 attempt(s), elapsed=20ms
+    webhook_test.go:173: [TEST] └─ STEP 1/3 completed
+    webhook_test.go:178: [TEST] ┌─ STEP 2/3: Create valid ModelRoute with DryRun
+    webhook_test.go:179: [TEST] │ Valid ModelRoute: kthena-e2e-router-pgbfa/webhook-valid-dryrun-e6imj
+    webhook_test.go:207: [TEST] │ Valid ModelRoute DryRun succeeded
+    webhook_test.go:211: [TEST] └─ STEP 2/3 completed
+    webhook_test.go:214: [TEST] ┌─ STEP 3/3: Create invalid ModelRoute with DryRun
+    webhook_test.go:215: [TEST] │ Invalid ModelRoute: kthena-e2e-router-pgbfa/webhook-invalid-dryrun-vp62c
+    webhook_test.go:216: [TEST] │ Expected rejection reason: lora adapter name cannot be an empty string
+    webhook_test.go:242: [TEST] │ Invalid ModelRoute DryRun was rejected
+    webhook_test.go:243: [TEST] │ Error Type: *errors.StatusError
+    webhook_test.go:243: [TEST] │ Error String: admission webhook "validate-modelroute.volcano.sh" denied the request: validation failed:   - spec.loraAdapters[0]: Invalid value: "": lora adapter name cannot be an empty string
+    webhook_test.go:243: [TEST] │ Error Full: admission webhook "validate-modelroute.volcano.sh" denied the request: validation failed:   - spec.loraAdapters[0]: Invalid value: "": lora adapter name cannot be an empty string
+    webhook_test.go:252: [TEST] │ Checking error contains: "lora adapter name cannot be an empty string"
+    webhook_test.go:253: [TEST] │ Actual error: "admission webhook \"validate-modelroute.volcano.sh\" denied the request: validation failed:   - spec.loraAdapters[0]: Invalid value: \"\": lora adapter name cannot be an empty string"
+    webhook_test.go:257: [TEST] └─ STEP 3/3 completed
+    webhook_test.go:259: [TEST] ════════════════════════════════════════════════════════════
+    webhook_test.go:260: [TEST] PASSED in 38ms
+    webhook_test.go:261: [TEST] ════════════════════════════════════════════════════════════
+--- PASS: TestKthenaRouterValidatingWebhook (0.04s)
+PASS
+ok  	github.com/volcano-sh/kthena/test/e2e/router	(cached)
