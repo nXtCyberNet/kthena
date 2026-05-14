@@ -268,7 +268,7 @@ func (mc *ModelBoosterController) updateModelBoosterStatus(ctx context.Context, 
 			return err
 		}
 		updated := latest.DeepCopy()
-		updated.Status.Conditions = modelBooster.Status.Conditions
+		modelBooster.Status.DeepCopyInto(&updated.Status)
 
 		updated.Status.ObservedGeneration = updated.Generation
 
@@ -288,7 +288,7 @@ func (mc *ModelBoosterController) updateModelBoosterStatus(ctx context.Context, 
 		return err
 	}
 
-	*modelBooster = *finalModel
+	finalModel.DeepCopyInto(modelBooster)
 
 	//Cleanup the LoRA cache ONLY after confirmed API success.
 	mc.cleanupOutdatedLoraUpdateCache(modelBooster)

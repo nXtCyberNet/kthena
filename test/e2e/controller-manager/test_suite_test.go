@@ -137,30 +137,3 @@ func waitForControllerManagerToStop(kubeClient *kubernetes.Clientset, namespace 
 		return len(pods.Items) == 0, nil
 	})
 }
-
-
-function RetryOnConflict(retryFunc):
-    maxRetries = 5
-    attempts = 0
-
-    loop:
-        err = retryFunc()
-
-        if err == nil:
-            return success
-
-        if err is NOT a conflict error (HTTP 409 / "object has been modified"):
-            return err  // unretryable, bail immediately
-
-        attempts++
-
-        if attempts >= maxRetries:
-            return err  // gave up
-
-        backoff(attempts)  // exponential or fixed sleep
-        
-        // re-fetch the latest object before retrying
-        // so you're applying changes on top of current state
-        refreshObject()
-
-    end loop
