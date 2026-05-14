@@ -60,12 +60,12 @@ func TestGetCountMetricsInfo(t *testing.T) {
 		{
 			name: "all known gauge metrics present",
 			allMetrics: map[string]*dto.MetricFamily{
-				GPUCacheUsage:      gaugeMetricFamily(0.75),
+				KVCacheUsage:      gaugeMetricFamily(0.75),
 				RequestWaitingNum: gaugeMetricFamily(3.0),
 				RequestRunningNum: gaugeMetricFamily(5.0),
 			},
 			want: map[string]float64{
-				utils.GPUCacheUsage:      0.75,
+				utils.KVCacheUsage:      0.75,
 				utils.RequestWaitingNum: 3.0,
 				utils.RequestRunningNum: 5.0,
 			},
@@ -85,21 +85,21 @@ func TestGetCountMetricsInfo(t *testing.T) {
 		{
 			name: "partial metrics — only kv cache present",
 			allMetrics: map[string]*dto.MetricFamily{
-				GPUCacheUsage: gaugeMetricFamily(0.5),
+				KVCacheUsage: gaugeMetricFamily(0.5),
 			},
 			want: map[string]float64{
-				utils.GPUCacheUsage: 0.5,
+				utils.KVCacheUsage: 0.5,
 			},
 		},
 		{
 			name: "zero values stored correctly",
 			allMetrics: map[string]*dto.MetricFamily{
-				GPUCacheUsage:      gaugeMetricFamily(0.0),
+				KVCacheUsage:      gaugeMetricFamily(0.0),
 				RequestWaitingNum: gaugeMetricFamily(0.0),
 				RequestRunningNum: gaugeMetricFamily(0.0),
 			},
 			want: map[string]float64{
-				utils.GPUCacheUsage:      0.0,
+				utils.KVCacheUsage:      0.0,
 				utils.RequestWaitingNum: 0.0,
 				utils.RequestRunningNum: 0.0,
 			},
@@ -141,7 +141,7 @@ func TestGetHistogramPodMetrics(t *testing.T) {
 		{
 			name: "no previous histogram returns zero latency for each metric",
 			allMetrics: map[string]*dto.MetricFamily{
-				TPOT:  histogramMetricFamily(10.0, 5),
+				ITL:  histogramMetricFamily(10.0, 5),
 				TTFT: histogramMetricFamily(20.0, 8),
 			},
 			previousHistogram: map[string]*dto.Histogram{},
@@ -155,7 +155,7 @@ func TestGetHistogramPodMetrics(t *testing.T) {
 			name: "with previous histogram computes correct delta average",
 			allMetrics: map[string]*dto.MetricFamily{
 				// current: sum=20, count=10; previous: sum=10, count=5 -> delta avg = 10/5 = 2.0
-				TPOT: histogramMetricFamily(20.0, 10),
+				ITL: histogramMetricFamily(20.0, 10),
 			},
 			previousHistogram: map[string]*dto.Histogram{
 				utils.TPOT: makePreviousHistogram(10.0, 5),
@@ -229,9 +229,6 @@ func TestGetHistogramPodMetrics(t *testing.T) {
 	}
 }
 
-// TestGetHistogramPodMetrics_StoredHistogramContent verifies that the histogram
-// snapshot stored for the next scrape cycle contains the correct SampleSum and
-// SampleCount from the current scrape.
 func TestGetHistogramPodMetrics_StoredHistogramContent(t *testing.T) {
 	engine := NewVllmEngine()
 	allMetrics := map[string]*dto.MetricFamily{
