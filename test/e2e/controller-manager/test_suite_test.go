@@ -74,16 +74,34 @@ func TestMain(m *testing.M) {
 	// Run tests
 	code := m.Run()
 
-	// Cleanup test namespace
-	if err := utils.DeleteTestNamespaceAndWait(kubeClient, testNamespace, 2*time.Minute); err != nil {
-		fmt.Printf("Warning: Failed to delete test namespace %s: %v\n", testNamespace, err)
-	}
-
 	if err := framework.UninstallKthena(config.Namespace); err != nil {
 		fmt.Printf("Failed to uninstall kthena: %v\n", err)
 	}
 
+	if err := waitForControllerManagerToStop(kubeClient, kthenaNamespace, 2*time.Minute); err != nil {
+		fmt.Printf("Warning: controller-manager did not fully stop before namespace deletion: %v\n", err)
+	}
+
+	// Cleanup test namespace after the controller has stopped reconciling.
+	if err := utils.DeleteTestNamespaceAndWait(kubeClient, testNamespace, 2*time.Minute); err != nil {
+		fmt.Printf("Warning: Failed to delete test namespace %s: %v\n", testNamespace, err)
+	}
+
 	os.Exit(code)
+}
+
+func waitForControllerManagerToStop(kubeClient *kubernetes.Clientset, namespace string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	labelSelector := "app.kubernetes.io/component=kthena-controller-manager"
+	return wait.PollUntilContextCancel(ctx, 2*time.Second, true, func(ctx context.Context) (bool, error) {
+		pods, err := kubeClient.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
+		if err != nil {
+			return false, err
+		}
+		return len(pods.Items) == 0, nil
+	})
 }
 
 func setupControllerManagerE2ETest(t *testing.T) (context.Context, *clientset.Clientset, *kubernetes.Clientset) {

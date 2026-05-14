@@ -708,15 +708,13 @@ func TestModelServingRollingUpdateMaxUnavailable(t *testing.T) {
 	// We'll periodically check the status to ensure that at no point do more than 2 replicas become unavailable
 	t.Log("Monitoring rolling update to ensure maxUnavailable=2 constraint is respected")
 
-	watchContext := context.Background()
+	watchContext, watchCancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer watchCancel()
 	maxObservedUnavailable := int32(0)
 	var mu sync.Mutex
 
-	watcherCtx, watcherCancel := context.WithCancel(watchContext)
-	defer watcherCancel()
-
 	go func() {
-		watcher, err := kthenaClient.WorkloadV1alpha1().ModelServings(testNamespace).Watch(watcherCtx, metav1.ListOptions{
+		watcher, err := kthenaClient.WorkloadV1alpha1().ModelServings(testNamespace).Watch(watchContext, metav1.ListOptions{
 			FieldSelector: fmt.Sprintf("metadata.name=%s", updatedMS.Name),
 		})
 		if err != nil {
@@ -726,7 +724,7 @@ func TestModelServingRollingUpdateMaxUnavailable(t *testing.T) {
 
 		for {
 			select {
-			case <-watcherCtx.Done():
+			case <-watchContext.Done():
 				return
 			case event, ok := <-watcher.ResultChan():
 				if !ok {
@@ -763,7 +761,6 @@ func TestModelServingRollingUpdateMaxUnavailable(t *testing.T) {
 	assert.True(t, maxObservedUnavailable <= 2, "Max unavailable replicas (%d) exceeded maxUnavailable limit (2)", maxObservedUnavailable)
 	t.Logf("Max observed unavailable replicas during update: %d", maxObservedUnavailable)
 
-	watcherCancel()
 	mu.Lock()
 	t.Logf("Maximum observed unavailable replicas during test: %d", maxObservedUnavailable)
 	mu.Unlock()
@@ -1048,7 +1045,7 @@ func TestModelServingRollingUpdateMaxUnavailableWithBadImage(t *testing.T) {
 	var mu sync.Mutex
 	observedUnavailableHistory := []int32{}
 
-	watcherCtx, watcherCancel := context.WithCancel(context.Background())
+	watcherCtx, watcherCancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer watcherCancel()
 
 	go func() {
