@@ -408,5 +408,5 @@ func TestKthenaRouterValidatingWebhook(t *testing.T) {
 	t.Logf("[TEST] ║    Step 2 (Valid Route): %v", step2Duration)
 	t.Logf("[TEST] ║    Step 3 (Invalid Route): %v", step3Duration)
 	t.Logf("[TEST] ║    Step 4 (Message Verify): %v", step4Duration)
-	t.Logf("[TEST] ╚════════════════════════════════════════════════════════════╝")
+	t.Logf("[TEST] ╚═════════════════════════════╝")
 }
