@@ -19,6 +19,7 @@ package router
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -323,19 +324,29 @@ func TestKthenaRouterValidatingWebhook(t *testing.T) {
 	assert.Contains(t, err.Error(), expectedErr)
 	t.Log("[TEST] └─ STEP 3/3 completed")
 
-	// Diagnostic commands for troubleshooting webhook issues
+	// Diagnostic commands for troubleshooting webhook issues — execute and log output
 	t.Log("[DIAGNOSTICS] ════════════════════════════════════════════════════════════")
-	t.Log("[DIAGNOSTICS] # 1. Was the webhook pod restarting around the time of failure?")
-	t.Log("[DIAGNOSTICS] kubectl get events -n dev --field-selector reason=Killing")
-	t.Log("")
-	t.Log("[DIAGNOSTICS] # 2. Was cert-manager rotating certs?")
-	t.Log("[DIAGNOSTICS] kubectl get events -n dev | grep cert")
-	t.Log("")
-	t.Log("[DIAGNOSTICS] # 3. Were there any controller restarts?")
-	t.Log("[DIAGNOSTICS] kubectl describe pod -n dev -l app=kthena-router-webhook | grep \"Restart Count\"")
-	t.Log("")
-	t.Log("[DIAGNOSTICS] # 4. Controller logs at the time of EOF")
-	t.Log("[DIAGNOSTICS] kubectl logs -n dev -l app=kthena-router-webhook --since=5m | grep -E \"cert|tls|shutdown|SIGTERM|listen\"")
+
+	runShell := func(cmd string) {
+		t.Logf("[DIAGNOSTICS] $ %s", cmd)
+		c := exec.CommandContext(ctx, "bash", "-c", cmd)
+		out, err := c.CombinedOutput()
+		if err != nil {
+			t.Logf("[DIAGNOSTICS] error: %v", err)
+		}
+		if len(out) == 0 {
+			t.Log("[DIAGNOSTICS] <no output>")
+		} else {
+			t.Logf("[DIAGNOSTICS] output:\n%s", string(out))
+		}
+		t.Log("")
+	}
+
+	runShell("kubectl get events -n dev --field-selector reason=Killing")
+	runShell("kubectl get events -n dev | grep cert || true")
+	runShell("kubectl describe pod -n dev -l app=kthena-router-webhook | grep \"Restart Count\" || true")
+	runShell("kubectl logs -n dev -l app=kthena-router-webhook --since=5m | grep -E \"cert|tls|shutdown|SIGTERM|listen\" || true")
+
 	t.Log("[DIAGNOSTICS] ════════════════════════════════════════════════════════════")
 
 	t.Log("[TEST] ════════════════════════════════════════════════════════════")
