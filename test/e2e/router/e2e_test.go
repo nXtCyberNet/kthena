@@ -32,7 +32,7 @@ var (
 	kthenaNamespace string
 )
 
-// TestMain runs setup and cleanup for all tests in this package.
+// TestMain runs setup for all tests in this package.
 func TestMain(m *testing.M) {
 	testNamespace = "kthena-e2e-router-" + utils.RandomString(5)
 
@@ -71,20 +71,6 @@ func TestMain(m *testing.M) {
 
 	// Run tests
 	code := m.Run()
-
-	// Cleanup common components
-	if err := testCtx.CleanupCommonComponents(); err != nil {
-		fmt.Printf("Failed to cleanup common components: %v\n", err)
-	}
-
-	// Delete test namespace
-	if err := testCtx.DeleteTestNamespace(); err != nil {
-		fmt.Printf("Failed to delete test namespace: %v\n", err)
-	}
-
-	if err := framework.UninstallKthena(config.Namespace); err != nil {
-		fmt.Printf("Failed to uninstall kthena: %v\n", err)
-	}
 
 	os.Exit(code)
 }

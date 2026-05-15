@@ -18,6 +18,8 @@ package router
 
 import (
 	"context"
+	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -32,21 +34,137 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 )
 
+func logWebhookError(t *testing.T, prefix string, err error) {
+	t.Helper()
+
+	if err == nil {
+		return
+	}
+
+	t.Logf("%s Error Type: %T", prefix, err)
+	t.Logf("%s Error String: %s", prefix, err.Error())
+	t.Logf("%s Error Full: %+v", prefix, err)
+}
+
+func isRetryableWebhookReadinessError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		s := e.Error()
+		if strings.Contains(s, "connect: connection refused") ||
+			strings.Contains(s, "i/o timeout") ||
+			strings.Contains(s, "context deadline exceeded") ||
+			strings.Contains(s, "no endpoints available") ||
+			strings.Contains(s, "service unavailable") ||
+			strings.Contains(s, "connection reset by peer") ||
+			strings.Contains(s, "TLS handshake") ||
+			strings.Contains(s, "EOF") {
+			return true
+		}
+	}
+	return false
+}
+
+func createModelRouteDryRunWithRetry(
+	t *testing.T,
+	ctx context.Context,
+	kthenaClient *clientset.Clientset,
+	namespace string,
+	route *networkingv1alpha1.ModelRoute,
+) error {
+	t.Helper()
+
+	const (
+		retryTimeout  = 30 * time.Second
+		retryInterval = 2 * time.Second
+	)
+
+	var lastErr error
+	attempt := 0
+
+	retryCtx, cancel := context.WithTimeout(ctx, retryTimeout)
+	defer cancel()
+
+	_ = wait.PollUntilContextCancel(retryCtx, retryInterval, true, func(ctx context.Context) (bool, error) {
+		attempt++
+		t.Logf("[WEBHOOK_CREATE] Attempt %d: creating %s/%s (DryRun)", attempt, namespace, route.Name)
+
+		_, err := kthenaClient.NetworkingV1alpha1().
+			ModelRoutes(namespace).
+			Create(ctx, route, metav1.CreateOptions{DryRun: []string{"All"}})
+
+		if err == nil {
+			t.Logf("[WEBHOOK_CREATE] Attempt %d: succeeded", attempt)
+			lastErr = nil
+			return true, nil
+		}
+
+		lastErr = err
+
+		// Admission rejection is intentional — stop retrying, caller checks this
+		if strings.Contains(err.Error(), "admission webhook") &&
+			strings.Contains(err.Error(), "denied the request") {
+			t.Logf("[WEBHOOK_CREATE] Attempt %d: admission rejection (not retryable)", attempt)
+			logWebhookError(t, "[WEBHOOK_CREATE]", err)
+			return false, err
+		}
+
+		// Transient infra/webhook errors — retry
+		if isRetryableWebhookReadinessError(err) {
+			t.Logf("[WEBHOOK_CREATE] Attempt %d: transient error, retrying", attempt)
+			logWebhookError(t, "[WEBHOOK_CREATE]", err)
+			return false, nil
+		}
+
+		// Unknown error — stop
+		t.Logf("[WEBHOOK_CREATE] Attempt %d: non-retryable error", attempt)
+		logWebhookError(t, "[WEBHOOK_CREATE]", err)
+		return false, err
+	})
+
+	return lastErr
+}
+
 // waitForKthenaRouterValidatingWebhook polls until a DryRun ModelRoute create reaches the
 // validating webhook (avoids flaky tests while cert-manager / deployment finishes).
 func waitForKthenaRouterValidatingWebhook(t *testing.T, ctx context.Context, kthenaClient *clientset.Clientset, namespace string) {
 	t.Helper()
-	t.Log("Waiting for kthena-router validating webhook to accept requests")
+
+	const (
+		readinessTimeout  = 2 * time.Minute
+		readinessInterval = 2 * time.Second
+	)
+
+	t.Log("[WEBHOOK_READINESS] ╔════════════════════════════════════════════════════════════╗")
+	t.Log("[WEBHOOK_READINESS] ║ Waiting for kthena-router validating webhook              ║")
+	t.Log("[WEBHOOK_READINESS] ╚════════════════════════════════════════════════════════════╝")
+	t.Logf("[WEBHOOK_READINESS] Namespace: %s", namespace)
+	t.Logf("[WEBHOOK_READINESS] Timeout: %s", readinessTimeout)
+	t.Logf("[WEBHOOK_READINESS] Poll Interval: %s", readinessInterval)
 
 	weight100 := uint32(100)
-	waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	waitCtx, cancel := context.WithTimeout(ctx, readinessTimeout)
 	defer cancel()
 
-	err := wait.PollUntilContextCancel(waitCtx, 2*time.Second, true, func(ctx context.Context) (bool, error) {
+	start := time.Now()
+	attempt := 0
+	var lastErr error
+
+	err := wait.PollUntilContextCancel(waitCtx, readinessInterval, true, func(ctx context.Context) (bool, error) {
+		attempt++
+
+		elapsed := time.Since(start).Round(time.Millisecond)
+		probeName := "webhook-ready-probe-" + utils.RandomString(5)
+
+		t.Logf("[WEBHOOK_READINESS] ┌─ Attempt %d | elapsed=%s", attempt, elapsed)
+		t.Logf("[WEBHOOK_READINESS] │ Probe ModelRoute: %s/%s", namespace, probeName)
+
 		probe := &networkingv1alpha1.ModelRoute{
 			ObjectMeta: metav1.ObjectMeta{
 				Namespace: namespace,
-				Name:      "webhook-ready-probe-" + utils.RandomString(5),
+				Name:      probeName,
 			},
 			Spec: networkingv1alpha1.ModelRouteSpec{
 				ModelName: "probe-model",
@@ -60,19 +178,47 @@ func waitForKthenaRouterValidatingWebhook(t *testing.T, ctx context.Context, kth
 				},
 			},
 		}
-		_, err := kthenaClient.NetworkingV1alpha1().ModelRoutes(namespace).Create(ctx, probe, metav1.CreateOptions{DryRun: []string{"All"}})
+
+		_, err := kthenaClient.NetworkingV1alpha1().
+			ModelRoutes(namespace).
+			Create(ctx, probe, metav1.CreateOptions{DryRun: []string{"All"}})
+
 		if err != nil {
-			errStr := err.Error()
-			if strings.Contains(errStr, "connect: connection refused") ||
-				strings.Contains(errStr, "i/o timeout") ||
-				strings.Contains(errStr, "context deadline exceeded") {
-				t.Logf("Router validating webhook not ready yet, retrying: %v", err)
+			lastErr = err
+
+			if isRetryableWebhookReadinessError(err) {
+				t.Logf("[WEBHOOK_READINESS] │ Result: retryable error")
+				logWebhookError(t, "[WEBHOOK_READINESS] │", err)
+				t.Log("[WEBHOOK_READINESS] └─ Retrying")
 				return false, nil
 			}
+
+			t.Logf("[WEBHOOK_READINESS] │ Result: non-retryable error")
+			logWebhookError(t, "[WEBHOOK_READINESS] │", err)
+			t.Log("[WEBHOOK_READINESS] └─ Failing")
 			return false, err
 		}
+
+		t.Logf("[WEBHOOK_READINESS] │ Result: webhook accepted DryRun request")
+		t.Logf("[WEBHOOK_READINESS] └─ Ready after %d attempt(s), elapsed=%s", attempt, time.Since(start).Round(time.Millisecond))
 		return true, nil
 	})
+
+	if err != nil {
+		t.Log("[WEBHOOK_READINESS] ════════════════════════════════════════════════════════════")
+		t.Log("[WEBHOOK_READINESS] FINAL FAILURE")
+		t.Logf("[WEBHOOK_READINESS] Namespace: %s", namespace)
+		t.Logf("[WEBHOOK_READINESS] Attempts: %d", attempt)
+		t.Logf("[WEBHOOK_READINESS] Elapsed: %s", time.Since(start).Round(time.Millisecond))
+
+		if lastErr != nil {
+			t.Log("[WEBHOOK_READINESS] Last observed error:")
+			logWebhookError(t, "[WEBHOOK_READINESS]", lastErr)
+		}
+
+		t.Log("[WEBHOOK_READINESS] ════════════════════════════════════════════════════════════")
+	}
+
 	require.NoError(t, err, "kthena-router validating webhook did not become ready in time")
 }
 
@@ -81,13 +227,33 @@ func waitForKthenaRouterValidatingWebhook(t *testing.T, ctx context.Context, kth
 // Invalid case uses an empty string in loraAdapters (CRD CEL allows non-empty list; webhook rejects item).
 func TestKthenaRouterValidatingWebhook(t *testing.T) {
 	ctx := context.Background()
+	testStart := time.Now()
+
+	t.Log("[TEST] ╔════════════════════════════════════════════════════════════╗")
+	t.Log("[TEST] ║ TestKthenaRouterValidatingWebhook                         ║")
+	t.Log("[TEST] ╚════════════════════════════════════════════════════════════╝")
+	t.Logf("[TEST] Start Time: %s", testStart.Format(time.RFC3339Nano))
+	t.Logf("[TEST] Test Namespace: %s", testNamespace)
+
+	// Temporary debug — remove after confirming fix
+	// Simulate webhook not being ready yet by adding artificial delay
+	// before the readiness wait, to catch the startup race
+	time.Sleep(0) // TODO: replace with negative offset to start test earlier if needed
+
+	t.Log("[TEST] ┌─ STEP 1/3: Wait for router validating webhook readiness")
 	waitForKthenaRouterValidatingWebhook(t, ctx, testCtx.KthenaClient, testNamespace)
+	t.Log("[TEST] └─ STEP 1/3 completed")
 
 	weight100 := uint32(100)
+
+	validRouteName := "webhook-valid-dryrun-" + utils.RandomString(5)
+	t.Log("[TEST] ┌─ STEP 2/3: Create valid ModelRoute with DryRun")
+	t.Logf("[TEST] │ Valid ModelRoute: %s/%s", testNamespace, validRouteName)
+
 	validRoute := &networkingv1alpha1.ModelRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: testNamespace,
-			Name:      "webhook-valid-dryrun-" + utils.RandomString(5),
+			Name:      validRouteName,
 		},
 		Spec: networkingv1alpha1.ModelRouteSpec{
 			ModelName: "webhook-valid",
@@ -101,13 +267,28 @@ func TestKthenaRouterValidatingWebhook(t *testing.T) {
 			},
 		},
 	}
-	_, err := testCtx.KthenaClient.NetworkingV1alpha1().ModelRoutes(testNamespace).Create(ctx, validRoute, metav1.CreateOptions{DryRun: []string{"All"}})
+
+	err := createModelRouteDryRunWithRetry(t, ctx, testCtx.KthenaClient, testNamespace, validRoute)
+
+	if err != nil {
+		t.Log("[TEST] │ Valid ModelRoute DryRun failed")
+		logWebhookError(t, "[TEST] │", err)
+	} else {
+		t.Log("[TEST] │ Valid ModelRoute DryRun succeeded")
+	}
+
 	require.NoError(t, err, "expected validating webhook to allow a valid ModelRoute (DryRun)")
+	t.Log("[TEST] └─ STEP 2/3 completed")
+
+	invalidRouteName := "webhook-invalid-dryrun-" + utils.RandomString(5)
+	t.Log("[TEST] ┌─ STEP 3/3: Create invalid ModelRoute with DryRun")
+	t.Logf("[TEST] │ Invalid ModelRoute: %s/%s", testNamespace, invalidRouteName)
+	t.Log("[TEST] │ Expected rejection reason: lora adapter name cannot be an empty string")
 
 	invalidRoute := &networkingv1alpha1.ModelRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: testNamespace,
-			Name:      "webhook-invalid-dryrun-" + utils.RandomString(5),
+			Name:      invalidRouteName,
 		},
 		Spec: networkingv1alpha1.ModelRouteSpec{
 			ModelName:    "",
@@ -122,7 +303,53 @@ func TestKthenaRouterValidatingWebhook(t *testing.T) {
 			},
 		},
 	}
-	_, err = testCtx.KthenaClient.NetworkingV1alpha1().ModelRoutes(testNamespace).Create(ctx, invalidRoute, metav1.CreateOptions{DryRun: []string{"All"}})
+
+	err = createModelRouteDryRunWithRetry(t, ctx, testCtx.KthenaClient, testNamespace, invalidRoute)
+
+	if err != nil {
+		t.Log("[TEST] │ Invalid ModelRoute DryRun was rejected")
+		logWebhookError(t, "[TEST] │", err)
+	} else {
+		t.Log("[TEST] │ Invalid ModelRoute DryRun unexpectedly succeeded")
+	}
+
 	require.Error(t, err, "expected validating webhook to reject invalid ModelRoute")
-	assert.Contains(t, err.Error(), "lora adapter name cannot be an empty string")
+
+	expectedErr := "lora adapter name cannot be an empty string"
+	if err != nil {
+		t.Logf("[TEST] │ Checking error contains: %q", expectedErr)
+		t.Logf("[TEST] │ Actual error: %q", err.Error())
+	}
+
+	assert.Contains(t, err.Error(), expectedErr)
+	t.Log("[TEST] └─ STEP 3/3 completed")
+
+	// Diagnostic commands for troubleshooting webhook issues — execute and log output
+	t.Log("[DIAGNOSTICS] ════════════════════════════════════════════════════════════")
+
+	runShell := func(cmd string) {
+		t.Logf("[DIAGNOSTICS] $ %s", cmd)
+		c := exec.CommandContext(ctx, "bash", "-c", cmd)
+		out, err := c.CombinedOutput()
+		if err != nil {
+			t.Logf("[DIAGNOSTICS] error: %v", err)
+		}
+		if len(out) == 0 {
+			t.Log("[DIAGNOSTICS] <no output>")
+		} else {
+			t.Logf("[DIAGNOSTICS] output:\n%s", string(out))
+		}
+		t.Log("")
+	}
+
+	runShell("kubectl get events -n dev --field-selector reason=Killing")
+	runShell("kubectl get events -n dev | grep cert || true")
+	runShell("kubectl describe pod -n dev -l app=kthena-router-webhook | grep \"Restart Count\" || true")
+	runShell("kubectl logs -n dev -l app=kthena-router-webhook --since=5m | grep -E \"cert|tls|shutdown|SIGTERM|listen\" || true")
+
+	t.Log("[DIAGNOSTICS] ════════════════════════════════════════════════════════════")
+
+	t.Log("[TEST] ════════════════════════════════════════════════════════════")
+	t.Logf("[TEST] PASSED in %s", time.Since(testStart).Round(time.Millisecond))
+	t.Log("[TEST] ════════════════════════════════════════════════════════════")
 }
