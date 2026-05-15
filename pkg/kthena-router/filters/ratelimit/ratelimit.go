@@ -69,7 +69,6 @@ type LimiterConfig struct {
 // InputLimiterConfig wraps LimiterConfig for input-specific storage
 type InputLimiterConfig struct {
 	*LimiterConfig
-	HasLimit bool // whether input limit is configured
 }
 
 // OutputLimiterConfig wraps LimiterConfig for output-specific storage
@@ -135,7 +134,7 @@ func (r *TokenRateLimiter) RateLimit(model, prompt string) error {
 	r.mutex.RUnlock()
 
 	// Check input token rate limit
-	if hasInputLimit && inputConfig.HasLimit && inputConfig.Limiter != nil &&
+	if hasInputLimit && inputConfig.Limiter != nil &&
 		!inputConfig.Limiter.AllowN(time.Now(), tokens) {
 		return &InputRateLimitExceededError{}
 	}
@@ -177,7 +176,7 @@ func (r *TokenRateLimiter) AddOrUpdateLimiter(model string, ratelimit *networkin
 
 	// Helper: check if input config has changed
 	inputConfigChanged := func(oldConfig *InputLimiterConfig) bool {
-		if oldConfig == nil || !oldConfig.HasLimit {
+		if oldConfig == nil {
 			return ratelimit.InputTokensPerUnit != nil // changed if new limit added
 		}
 		if ratelimit.InputTokensPerUnit == nil {
@@ -270,7 +269,6 @@ func (r *TokenRateLimiter) AddOrUpdateLimiter(model string, ratelimit *networkin
 					IsGlobal:           useGlobal,
 					GlobalRedisAddress: redisAddr,
 				},
-				HasLimit: true,
 			}
 		}
 		// If config hasn't changed, keep existing limiter with its state
