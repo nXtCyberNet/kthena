@@ -234,6 +234,11 @@ func TestKthenaRouterValidatingWebhook(t *testing.T) {
 	t.Logf("[TEST] Start Time: %s", testStart.Format(time.RFC3339Nano))
 	t.Logf("[TEST] Test Namespace: %s", testNamespace)
 
+	// Temporary debug — remove after confirming fix
+	// Simulate webhook not being ready yet by adding artificial delay
+	// before the readiness wait, to catch the startup race
+	time.Sleep(0) // TODO: replace with negative offset to start test earlier if needed
+
 	t.Log("[TEST] ┌─ STEP 1/3: Wait for router validating webhook readiness")
 	waitForKthenaRouterValidatingWebhook(t, ctx, testCtx.KthenaClient, testNamespace)
 	t.Log("[TEST] └─ STEP 1/3 completed")
@@ -317,6 +322,21 @@ func TestKthenaRouterValidatingWebhook(t *testing.T) {
 
 	assert.Contains(t, err.Error(), expectedErr)
 	t.Log("[TEST] └─ STEP 3/3 completed")
+
+	// Diagnostic commands for troubleshooting webhook issues
+	t.Log("[DIAGNOSTICS] ════════════════════════════════════════════════════════════")
+	t.Log("[DIAGNOSTICS] # 1. Was the webhook pod restarting around the time of failure?")
+	t.Log("[DIAGNOSTICS] kubectl get events -n dev --field-selector reason=Killing")
+	t.Log("")
+	t.Log("[DIAGNOSTICS] # 2. Was cert-manager rotating certs?")
+	t.Log("[DIAGNOSTICS] kubectl get events -n dev | grep cert")
+	t.Log("")
+	t.Log("[DIAGNOSTICS] # 3. Were there any controller restarts?")
+	t.Log("[DIAGNOSTICS] kubectl describe pod -n dev -l app=kthena-router-webhook | grep \"Restart Count\"")
+	t.Log("")
+	t.Log("[DIAGNOSTICS] # 4. Controller logs at the time of EOF")
+	t.Log("[DIAGNOSTICS] kubectl logs -n dev -l app=kthena-router-webhook --since=5m | grep -E \"cert|tls|shutdown|SIGTERM|listen\"")
+	t.Log("[DIAGNOSTICS] ════════════════════════════════════════════════════════════")
 
 	t.Log("[TEST] ════════════════════════════════════════════════════════════")
 	t.Logf("[TEST] PASSED in %s", time.Since(testStart).Round(time.Millisecond))
