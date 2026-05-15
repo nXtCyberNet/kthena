@@ -18,6 +18,7 @@ package router
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -49,15 +50,80 @@ func isRetryableWebhookReadinessError(err error) bool {
 		return false
 	}
 
-	errStr := err.Error()
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		s := e.Error()
+		if strings.Contains(s, "connect: connection refused") ||
+			strings.Contains(s, "i/o timeout") ||
+			strings.Contains(s, "context deadline exceeded") ||
+			strings.Contains(s, "no endpoints available") ||
+			strings.Contains(s, "service unavailable") ||
+			strings.Contains(s, "connection reset by peer") ||
+			strings.Contains(s, "TLS handshake") ||
+			strings.Contains(s, "EOF") {
+			return true
+		}
+	}
+	return false
+}
 
-	return strings.Contains(errStr, "connect: connection refused") ||
-		strings.Contains(errStr, "i/o timeout") ||
-		strings.Contains(errStr, "context deadline exceeded") ||
-		strings.Contains(errStr, "no endpoints available") ||
-		strings.Contains(errStr, "service unavailable") ||
-		strings.Contains(errStr, "connection reset by peer") ||
-		strings.Contains(errStr, "EOF")
+func createModelRouteDryRunWithRetry(
+	t *testing.T,
+	ctx context.Context,
+	kthenaClient *clientset.Clientset,
+	namespace string,
+	route *networkingv1alpha1.ModelRoute,
+) error {
+	t.Helper()
+
+	const (
+		retryTimeout  = 30 * time.Second
+		retryInterval = 2 * time.Second
+	)
+
+	var lastErr error
+	attempt := 0
+
+	retryCtx, cancel := context.WithTimeout(ctx, retryTimeout)
+	defer cancel()
+
+	_ = wait.PollUntilContextCancel(retryCtx, retryInterval, true, func(ctx context.Context) (bool, error) {
+		attempt++
+		t.Logf("[WEBHOOK_CREATE] Attempt %d: creating %s/%s (DryRun)", attempt, namespace, route.Name)
+
+		_, err := kthenaClient.NetworkingV1alpha1().
+			ModelRoutes(namespace).
+			Create(ctx, route, metav1.CreateOptions{DryRun: []string{"All"}})
+
+		if err == nil {
+			t.Logf("[WEBHOOK_CREATE] Attempt %d: succeeded", attempt)
+			lastErr = nil
+			return true, nil
+		}
+
+		lastErr = err
+
+		// Admission rejection is intentional — stop retrying, caller checks this
+		if strings.Contains(err.Error(), "admission webhook") &&
+			strings.Contains(err.Error(), "denied the request") {
+			t.Logf("[WEBHOOK_CREATE] Attempt %d: admission rejection (not retryable)", attempt)
+			logWebhookError(t, "[WEBHOOK_CREATE]", err)
+			return false, err
+		}
+
+		// Transient infra/webhook errors — retry
+		if isRetryableWebhookReadinessError(err) {
+			t.Logf("[WEBHOOK_CREATE] Attempt %d: transient error, retrying", attempt)
+			logWebhookError(t, "[WEBHOOK_CREATE]", err)
+			return false, nil
+		}
+
+		// Unknown error — stop
+		t.Logf("[WEBHOOK_CREATE] Attempt %d: non-retryable error", attempt)
+		logWebhookError(t, "[WEBHOOK_CREATE]", err)
+		return false, err
+	})
+
+	return lastErr
 }
 
 // waitForKthenaRouterValidatingWebhook polls until a DryRun ModelRoute create reaches the
@@ -196,9 +262,7 @@ func TestKthenaRouterValidatingWebhook(t *testing.T) {
 		},
 	}
 
-	_, err := testCtx.KthenaClient.NetworkingV1alpha1().
-		ModelRoutes(testNamespace).
-		Create(ctx, validRoute, metav1.CreateOptions{DryRun: []string{"All"}})
+	err := createModelRouteDryRunWithRetry(t, ctx, testCtx.KthenaClient, testNamespace, validRoute)
 
 	if err != nil {
 		t.Log("[TEST] │ Valid ModelRoute DryRun failed")
@@ -234,9 +298,7 @@ func TestKthenaRouterValidatingWebhook(t *testing.T) {
 		},
 	}
 
-	_, err = testCtx.KthenaClient.NetworkingV1alpha1().
-		ModelRoutes(testNamespace).
-		Create(ctx, invalidRoute, metav1.CreateOptions{DryRun: []string{"All"}})
+	err = createModelRouteDryRunWithRetry(t, ctx, testCtx.KthenaClient, testNamespace, invalidRoute)
 
 	if err != nil {
 		t.Log("[TEST] │ Invalid ModelRoute DryRun was rejected")
