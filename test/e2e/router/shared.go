@@ -706,15 +706,15 @@ func TestModelRouteWithRateLimitShared(t *testing.T, testCtx *routercontext.Rout
 			case http.StatusOK:
 				successfulRequests++
 				t.Logf("Request %d succeeded", successfulRequests)
-				case http.StatusTooManyRequests:
-					assert.Contains(t, strings.ToLower(string(responseBody)), "rate limit",
-						"Rate limit error response must contain descriptive message")
-					rateLimited = true
-					t.Logf("Input token rate limit enforced after %d successful requests", successfulRequests)
-				default:
-					t.Fatalf("Unexpected HTTP status code %d on request %d. Response: %s",
-						resp.StatusCode, attempt+1, string(responseBody))
-				}
+			case http.StatusTooManyRequests:
+				assert.Contains(t, strings.ToLower(string(responseBody)), "rate limit",
+					"Rate limit error response must contain descriptive message")
+				rateLimited = true
+				t.Logf("Input token rate limit enforced after %d successful requests", successfulRequests)
+			default:
+				t.Fatalf("Unexpected HTTP status code %d on request %d. Response: %s",
+					resp.StatusCode, attempt+1, string(responseBody))
+			}
 
 			if rateLimited {
 				break
