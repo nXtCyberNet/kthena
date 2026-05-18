@@ -315,6 +315,59 @@ func TestRouter_HandlerFunc_ScheduleFailure(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "can't schedule to target pod")
 }
 
+func TestParseModelRequestValidatesModelName(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{
+			name:    "valid model",
+			body:    `{"model": "test-model", "prompt": "hello"}`,
+			wantErr: false,
+		},
+		{
+			name:    "missing model",
+			body:    `{"prompt": "hello"}`,
+			wantErr: true,
+		},
+		{
+			name:    "non-string model",
+			body:    `{"model": 123, "prompt": "hello"}`,
+			wantErr: true,
+		},
+		{
+			name:    "empty model",
+			body:    `{"model": "", "prompt": "hello"}`,
+			wantErr: true,
+		},
+		{
+			name:    "whitespace model",
+			body:    `{"model": "  ", "prompt": "hello"}`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request, _ = http.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(tt.body))
+
+			got, err := ParseModelRequest(c)
+			if tt.wantErr {
+				assert.Error(t, err)
+				assert.Nil(t, got)
+				assert.Equal(t, http.StatusNotFound, w.Code)
+				assert.Contains(t, w.Body.String(), "model not found")
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, "test-model", got["model"])
+		})
+	}
+}
+
 func TestAccessLogConfigurationFromEnv(t *testing.T) {
 	// Save original environment variables
 	originalEnabled := os.Getenv("ACCESS_LOG_ENABLED")

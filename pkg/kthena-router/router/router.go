@@ -476,7 +476,7 @@ func ParseModelRequest(c *gin.Context) (ModelRequest, error) {
 	}
 
 	modelName, ok := modelRequest["model"].(string)
-	if !ok {
+	if !ok || strings.TrimSpace(modelName) == "" {
 		c.AbortWithStatusJSON(http.StatusNotFound, "model not found")
 		return nil, fmt.Errorf("model not found")
 	}
