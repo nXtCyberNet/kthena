@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
@@ -944,7 +945,7 @@ func doRequest(
 	port int32,
 ) (*http.Response, error) {
 	// step 1: change request URL to prefill pod URL.
-	req.URL.Host = fmt.Sprintf("%s:%d", podIP, port)
+	req.URL.Host = net.JoinHostPort(podIP, strconv.Itoa(int(port)))
 
 	// step 2: use http.Transport to do request to prefill pod.
 	transport := http.DefaultTransport
@@ -1037,8 +1038,8 @@ func (r *Router) proxyToPDDisaggregated(
 		}
 
 		// Build addresses for prefill and decode pods
-		prefillAddr := fmt.Sprintf("%s:%d", ctx.PrefillPods[i].Pod.Status.PodIP, port)
-		decodeAddr := fmt.Sprintf("%s:%d", ctx.DecodePods[i].Pod.Status.PodIP, port)
+		prefillAddr := net.JoinHostPort(ctx.PrefillPods[i].Pod.Status.PodIP, strconv.Itoa(int(port)))
+		decodeAddr := net.JoinHostPort(ctx.DecodePods[i].Pod.Status.PodIP, strconv.Itoa(int(port)))
 
 		klog.V(4).Infof("Attempting PD disaggregated request: prefill=%s, decode=%s", prefillAddr, decodeAddr)
 

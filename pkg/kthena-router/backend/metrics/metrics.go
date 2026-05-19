@@ -18,7 +18,9 @@ package metrics
 
 import (
 	"fmt"
+	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	dto "github.com/prometheus/client_model/go"
@@ -33,6 +35,10 @@ var httpClient = &http.Client{
 
 func HTTPClient() *http.Client {
 	return httpClient
+}
+
+func PodEndpointURL(podIP string, port uint32, path string) string {
+	return "http://" + net.JoinHostPort(podIP, strconv.FormatUint(uint64(port), 10)) + path
 }
 
 // This function refers to aibrix(https://github.com/vllm-project/aibrix/blob/main/pkg/metrics/utils.go)
