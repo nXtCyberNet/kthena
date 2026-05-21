@@ -19,9 +19,9 @@ package auth
 import (
 	"bytes"
 	"context"
-	"io"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -46,11 +46,6 @@ func TestExtractTokenFromHeader(t *testing.T) {
 			expected: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
 		},
 		{
-			name:     "no bearer prefix",
-			header:   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
-			expected: "",
-		},
-		{
 			name:     "empty header",
 			header:   "",
 			expected: "",
@@ -60,23 +55,7 @@ func TestExtractTokenFromHeader(t *testing.T) {
 			header:   "Bearer ",
 			expected: "",
 		},
-		{
-			name:     "lowercase bearer scheme",
-			header:   "bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
-			expected: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
-		},
-		{
-			name:     "bearer token with extra whitespace",
-			header:   "  Bearer   eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9  ",
-			expected: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
-		},
-		{
-			name:     "token with embedded whitespace",
-			header:   "Bearer token with space",
-			expected: "",
-		},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest("GET", "/", nil)

@@ -97,10 +97,14 @@ func extractTokenFromBody(c *gin.Context) string {
 
 	if tokenValue, exists := bodyData["userId"]; exists {
 		if tokenStr, ok := tokenValue.(string); ok {
-			return tokenStr
+			fields := strings.Fields(tokenStr)
+			if len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") {
+				return fields[1]
+			} else {
+				return tokenStr
+			}
 		}
 	}
-
 	return ""
 }
 
