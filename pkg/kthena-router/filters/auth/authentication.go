@@ -51,30 +51,6 @@ func extractTokenFromHeader(req *http.Request) string {
 	return fields[1]
 }
 
-func extractTokenFromBody(c *gin.Context) string {
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		klog.V(4).Infof("failed to read request body: %v", err)
-		return ""
-	}
-
-	c.Request.Body = io.NopCloser(strings.NewReader(string(body)))
-
-	var bodyData map[string]interface{}
-	if err := json.Unmarshal(body, &bodyData); err != nil {
-		klog.V(4).Infof("failed to parse request body as JSON: %v", err)
-		return ""
-	}
-
-	if tokenValue, exists := bodyData["userId"]; exists {
-		if tokenStr, ok := tokenValue.(string); ok {
-			return tokenStr
-		}
-	}
-
-	return ""
-}
-
 // JWTAuthenticator provides JWT token validation with automatic JWKS rotation support
 type JWTAuthenticator struct {
 	enabled bool         // Whether JWT authentication is enabled
@@ -105,6 +81,30 @@ func (j *JWTAuthenticator) Close() {
 	if j.rotator != nil {
 		j.rotator.Stop()
 	}
+}
+
+func extractTokenFromBody(c *gin.Context) string {
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		klog.V(4).Infof("failed to read request body: %v", err)
+		return ""
+	}
+
+	c.Request.Body = io.NopCloser(strings.NewReader(string(body)))
+
+	var bodyData map[string]interface{}
+	if err := json.Unmarshal(body, &bodyData); err != nil {
+		klog.V(4).Infof("failed to parse request body as JSON: %v", err)
+		return ""
+	}
+
+	if tokenValue, exists := bodyData["userId"]; exists {
+		if tokenStr, ok := tokenValue.(string); ok {
+			return tokenStr
+		}
+	}
+
+	return ""
 }
 
 // authenticate validates the token and returns the subject
@@ -342,11 +342,6 @@ func (j *JWTAuthenticator) Authenticate() gin.HandlerFunc {
 			// Extract and validate the JWT token
 			token := extractTokenFromHeader(c.Request)
 
-			// Fallback: try to read token from request body if not in header
-			if token == "" {
-				token = extractTokenFromBody(c)
-			}
-
 			if token == "" {
 				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Authorization header missing or invalid"})
 				return
@@ -358,6 +353,12 @@ func (j *JWTAuthenticator) Authenticate() gin.HandlerFunc {
 				return
 			}
 			c.Set(common.UserIdKey, sub)
+		} else {
+			// Auth disabled — attempt fallback identity resolution
+			// so fairness scheduling can still function
+			if uid := extractTokenFromBody(c); uid != "" {
+				c.Set(common.UserIdKey, uid)
+			}
 		}
 		c.Next()
 	}
