@@ -38,17 +38,14 @@ import (
 
 // JWT token extraction constants
 const (
-	header       = "Authorization"
-	bearerScheme = "Bearer"
+	header = "Authorization"
+	prefix = "Bearer "
 )
 
 // extractTokenFromHeader extracts the Bearer token from the Authorization header
 func extractTokenFromHeader(req *http.Request) string {
-	fields := strings.Fields(req.Header.Get(header))
-	if len(fields) != 2 || !strings.EqualFold(fields[0], bearerScheme) {
-		return ""
-	}
-	return fields[1]
+	value := req.Header.Get(header)
+	return strings.TrimPrefix(value, prefix)
 }
 
 // JWTAuthenticator provides JWT token validation with automatic JWKS rotation support
@@ -343,8 +340,11 @@ func (j *JWTAuthenticator) Authenticate() gin.HandlerFunc {
 			token := extractTokenFromHeader(c.Request)
 
 			if token == "" {
-				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Authorization header missing or invalid"})
-				return
+				token = extractTokenFromBody(c)
+				if token == "" {
+					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Authorization header missing or invalid"})
+					return
+				}
 			}
 
 			sub, err := j.authenticate(token)
@@ -353,12 +353,6 @@ func (j *JWTAuthenticator) Authenticate() gin.HandlerFunc {
 				return
 			}
 			c.Set(common.UserIdKey, sub)
-		} else {
-			// Auth disabled — attempt fallback identity resolution
-			// so fairness scheduling can still function
-			if uid := extractTokenFromBody(c); uid != "" {
-				c.Set(common.UserIdKey, uid)
-			}
 		}
 		c.Next()
 	}
