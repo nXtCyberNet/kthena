@@ -1700,9 +1700,11 @@ func TestRouterConfigUpdateShared(t *testing.T, testCtx *routercontext.RouterTes
 			return
 		}
 
-		if err := utils.RolloutRestartDeployment(cleanupCtx, testCtx.KubeClient, kthenaNamespace, routerDeploymentName, defaultScalingTimeout); err != nil {
-			t.Logf("Warning: Failed to rollout restart router deployment: %v", err)
-		}
+		// Rollout-restart router so the deployment replaces pods gracefully with the restored config.
+		_ = utils.RolloutRestartDeploymentE(cleanupCtx, testCtx.KubeClient, kthenaNamespace, routerDeploymentName)
+
+		// Wait for the router to become ready with the restored config.
+		_ = utils.WaitForDeploymentReadyE(cleanupCtx, testCtx.KubeClient, kthenaNamespace, routerDeploymentName, defaultScalingTimeout)
 	})
 
 	// Update the ConfigMap with a new scheduler configuration:
@@ -1730,12 +1732,34 @@ func TestRouterConfigUpdateShared(t *testing.T, testCtx *routercontext.RouterTes
 	_, err = testCtx.KubeClient.CoreV1().ConfigMaps(kthenaNamespace).Update(ctx, cm, metav1.UpdateOptions{})
 	require.NoError(t, err, "Failed to update router ConfigMap")
 
-	// Trigger a rollout restart so the deployment controller creates new pods with
-	// the updated config via a rolling update. This keeps the webhook endpoint
-	// available throughout the restart and waits for the rollout to fully complete.
-	t.Log("Triggering rollout restart of router deployment...")
-	err = utils.RolloutRestartDeployment(ctx, testCtx.KubeClient, kthenaNamespace, routerDeploymentName, defaultScalingTimeout)
-	require.NoError(t, err, "Failed to rollout restart router deployment")
+	// Record pre-restart pod names to confirm they get replaced.
+	preRestartPods := utils.GetReadyRouterPods(t, testCtx.KubeClient, kthenaNamespace)
+	preRestartPodNames := make(map[string]bool, len(preRestartPods))
+	for _, pod := range preRestartPods {
+		preRestartPodNames[pod.Name] = true
+	}
+
+	t.Log("Triggering rollout restart for router deployment...")
+	utils.RolloutRestartDeployment(t, ctx, testCtx.KubeClient, kthenaNamespace, routerDeploymentName)
+
+	// Wait for pre-restart pods to be replaced by new ones.
+	require.Eventually(t, func() bool {
+		pods, err := testCtx.KubeClient.CoreV1().Pods(kthenaNamespace).List(ctx, metav1.ListOptions{
+			LabelSelector: routerPodSelector,
+		})
+		if err != nil {
+			return false
+		}
+		for _, pod := range pods.Items {
+			if preRestartPodNames[pod.Name] {
+				return false
+			}
+		}
+		return len(pods.Items) > 0
+	}, defaultScalingTimeout, 2*time.Second, "Pre-restart pods should be replaced")
+
+	// Wait for the deployment to be ready with the new pods.
+	utils.WaitForDeploymentReady(t, ctx, testCtx.KubeClient, kthenaNamespace, routerDeploymentName, expectedReplicas, defaultScalingTimeout)
 	t.Log("Router deployment is ready after restart")
 
 	// Set up port-forward to the restarted router on a dynamically selected local port
