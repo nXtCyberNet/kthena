@@ -1701,10 +1701,14 @@ func TestRouterConfigUpdateShared(t *testing.T, testCtx *routercontext.RouterTes
 		}
 
 		// Rollout-restart router so the deployment replaces pods gracefully with the restored config.
-		_ = utils.RolloutRestartDeploymentE(cleanupCtx, testCtx.KubeClient, kthenaNamespace, routerDeploymentName)
+		if err := utils.RolloutRestartDeploymentE(cleanupCtx, testCtx.KubeClient, kthenaNamespace, routerDeploymentName); err != nil {
+			t.Logf("warning: cleanup failed to restart router: %v", err)
+		}
 
 		// Wait for the router to become ready with the restored config.
-		_ = utils.WaitForDeploymentReadyE(cleanupCtx, testCtx.KubeClient, kthenaNamespace, routerDeploymentName, defaultScalingTimeout)
+		if err := utils.WaitForDeploymentReadyE(cleanupCtx, testCtx.KubeClient, kthenaNamespace, routerDeploymentName, defaultScalingTimeout); err != nil {
+			t.Logf("warning: cleanup failed to wait for router deployment readiness: %v", err)
+		}
 	})
 
 	// Update the ConfigMap with a new scheduler configuration:

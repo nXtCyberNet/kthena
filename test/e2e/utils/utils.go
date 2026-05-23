@@ -33,9 +33,9 @@ import (
 )
 
 const (
-	defaultPollingInterval      = 2 * time.Second
-	DefaultAPICallTimeout       = 10 * time.Second
-	rolloutRestartAtAnnotation  = "kubectl.kubernetes.io/restartedAt"
+	defaultPollingInterval     = 2 * time.Second
+	DefaultAPICallTimeout      = 10 * time.Second
+	rolloutRestartAtAnnotation = "kubectl.kubernetes.io/restartedAt"
 )
 
 // WaitForModelServingReady waits for a ModelServing to converge with desired replicas.
