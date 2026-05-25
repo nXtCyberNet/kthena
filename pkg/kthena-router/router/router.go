@@ -793,14 +793,11 @@ func (r *Router) proxyModelEndpoint(
 
 	// proxy to pd aggregated pod
 	if ctx.BestPods != nil {
-		decodeRequest := connectors.BuildDecodeRequest(c, req, modelRequest)
 		// build request
+		decodeRequest := connectors.BuildDecodeRequest(c, req, modelRequest)
 		stream := isStreaming(modelRequest)
-		userID := ""
-		if v, ok := modelRequest["userId"].(string); ok {
-			userID = v
-		}
 		modelName := ctx.Model
+		userID := c.GetString(common.UserIdKey)
 		err := r.proxy(c, decodeRequest, ctx, stream, port, func(resp handlers.OpenAIResponse) {
 			if resp.Usage.TotalTokens <= 0 {
 				return
@@ -1125,24 +1122,13 @@ func (r *Router) proxyToPDDisaggregated(
 	return fmt.Errorf("all prefill/decode attempts failed")
 }
 
-func getUserID(c *gin.Context) (string, error) {
-	userIDValue, exists := c.Get(common.UserIdKey)
-	if !exists {
-		return "", fmt.Errorf("missing userId in request body")
-	}
-
-	userID, ok := userIDValue.(string)
-	if !ok {
-		return "", fmt.Errorf("userId is not a string")
-	}
-
-	return userID, nil
-}
-
 // handleFairnessScheduling handles the fairness scheduling flow for requests
 func (r *Router) handleFairnessScheduling(c *gin.Context, modelRequest ModelRequest, requestID string, modelName string) error {
-	// donot block the proxying if userId is not present, which should have been intercepted by Auth
-	userId, _ := getUserID(c)
+	// don't block the proxying if userId is not present, which should have been intercepted by Auth middleware
+	userId := c.GetString(common.UserIdKey)
+	if userId == "" {
+		klog.Warningf("user ID not found in request %s", requestID)
+	}
 	// Create request-scoped context that unifies client disconnect and server timeout
 	reqCtx, cancel := context.WithTimeout(c.Request.Context(), r.fairnessTimeout)
 	defer cancel()
