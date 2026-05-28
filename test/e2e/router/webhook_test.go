@@ -29,7 +29,9 @@ import (
 )
 
 //
-// The validating webhook is served by the kthena-router pod itself, not a separate// deployment. TestRouter
+// The validating webhook is served by the kthena-router pod itself, not a separate
+// deployment. TestRouterConfigUpdate deliberately restarts the kthena-router pod before
+// this test runs.
 
 // TestKthenaRouterValidatingWebhook ensures the networking chart's ValidatingWebhookConfiguration
 // targets the real API group and the router webhook rejects invalid ModelRoute specs.

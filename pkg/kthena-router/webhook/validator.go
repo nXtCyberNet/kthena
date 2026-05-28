@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -39,6 +40,7 @@ const timeout = 30 * time.Second
 type KthenaRouterValidator struct {
 	httpServer *http.Server
 	kubeClient kubernetes.Interface
+	readyCh    chan struct{} // Signals when the webhook server is ready to accept requests
 }
 
 // NewKthenaRouterValidator creates a new KthenaRouterValidator.
@@ -55,6 +57,7 @@ func NewKthenaRouterValidator(kubeClient kubernetes.Interface, port int) *Kthena
 	return &KthenaRouterValidator{
 		httpServer: server,
 		kubeClient: kubeClient,
+		readyCh:    make(chan struct{}),
 	}
 }
 
@@ -78,7 +81,31 @@ func (v *KthenaRouterValidator) Run(ctx context.Context, tlsCertFile, tlsPrivate
 		}
 	}()
 
-	// shutdown gracefully shuts down the server
+	// Wait for server to be ready by attempting to connect via the readiness check
+	// This ensures the TLS listener is actually accepting connections before returning
+	readyCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		select {
+		case <-readyCtx.Done():
+			klog.Fatalf("webhook server failed to become ready within timeout")
+		case <-time.After(100 * time.Millisecond):
+			// Try to establish a connection to verify the server is listening
+			conn, err := net.DialTimeout("tcp", v.httpServer.Addr, 1*time.Second)
+			if err == nil {
+				conn.Close()
+				close(v.readyCh)
+				klog.Infof("Webhook server is ready and accepting connections")
+				break
+			}
+		}
+		// If we broke out of the loop, we're ready
+		if v.readyCh == nil {
+			break
+		}
+	}
+
+	// Wait for context cancellation
 	<-ctx.Done()
 	v.shutdown()
 }
