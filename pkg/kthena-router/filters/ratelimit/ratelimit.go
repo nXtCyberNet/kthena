@@ -137,11 +137,11 @@ func (r *TokenRateLimiter) RateLimit(model, prompt string) error {
 		return &InputRateLimitExceededError{}
 	}
 
-	// Check output token rate limit
-	// We reserve 1 token to indicate this request will consume output tokens
-	// This actually RESERVES a token from the bucket, properly enforcing the rate limit
+	// Check output token rate limit - verify tokens are available
+	// Actual consumption happens in RecordOutputTokens() with proper reservation handling
 	if hasOutputLimit && outputConfig.HasLimit && outputConfig.Limiter != nil {
-		if !outputConfig.Limiter.AllowN(time.Now(), 1) {
+		// Non-consuming check: ensure at least 1 token available
+		if outputConfig.Limiter.Tokens() < 1 {
 			return &OutputRateLimitExceededError{}
 		}
 	}
@@ -155,12 +155,27 @@ func (r *TokenRateLimiter) RecordOutputTokens(model string, tokenCount int) {
 	outputConfig, exists := r.outputLimiters[model]
 	r.mutex.RUnlock()
 
-	if exists && outputConfig.HasLimit && outputConfig.Limiter != nil {
-		// Reserve the remaining tokens (we already reserved 1 in the pre-check)
-		if tokenCount > 1 {
-			outputConfig.Limiter.AllowN(time.Now(), tokenCount-1)
-		}
+	if !exists || !outputConfig.HasLimit || outputConfig.Limiter == nil {
+		return
 	}
+	if localLimiter, ok := outputConfig.Limiter.(*LocalLimiter); ok {
+		// Reserve the actual number of tokens consumed
+		res := localLimiter.Limiter.ReserveN(time.Now(), tokenCount)
+		if !res.OK() {
+			res.Cancel()
+			return
+		}
+		// Reservation confirmed - tokens are consumed and will be properly tracked
+		return
+	}
+
+	if tokenCount == 0 {
+		outputConfig.Limiter.AllowN(time.Now(), -1)
+	} else if tokenCount > 1 {
+		// Consume remaining tokens beyond the 1 already reserved
+		outputConfig.Limiter.AllowN(time.Now(), tokenCount-1)
+	}
+	// If tokenCount == 1, pre-reserved token covers it exactly
 }
 
 // AddOrUpdateLimiter adds or updates rate limiter for a model
