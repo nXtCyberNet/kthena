@@ -137,11 +137,13 @@ func (r *TokenRateLimiter) RateLimit(model, prompt string) error {
 		return &InputRateLimitExceededError{}
 	}
 
-	// Check output token rate limit - we conservatively check if there's at least 1 token available
-	// This prevents starting requests that likely won't be able to complete
-	if hasOutputLimit && outputConfig.HasLimit && outputConfig.Limiter != nil &&
-		outputConfig.Limiter.Tokens() < 1.0 {
-		return &OutputRateLimitExceededError{}
+	// Check output token rate limit
+	// We reserve 1 token to indicate this request will consume output tokens
+	// This actually RESERVES a token from the bucket, properly enforcing the rate limit
+	if hasOutputLimit && outputConfig.HasLimit && outputConfig.Limiter != nil {
+		if !outputConfig.Limiter.AllowN(time.Now(), 1) {
+			return &OutputRateLimitExceededError{}
+		}
 	}
 
 	return nil
@@ -154,7 +156,10 @@ func (r *TokenRateLimiter) RecordOutputTokens(model string, tokenCount int) {
 	r.mutex.RUnlock()
 
 	if exists && outputConfig.HasLimit && outputConfig.Limiter != nil {
-		outputConfig.Limiter.AllowN(time.Now(), tokenCount)
+		// Reserve the remaining tokens (we already reserved 1 in the pre-check)
+		if tokenCount > 1 {
+			outputConfig.Limiter.AllowN(time.Now(), tokenCount-1)
+		}
 	}
 }
 
