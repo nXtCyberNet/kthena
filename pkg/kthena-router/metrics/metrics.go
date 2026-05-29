@@ -283,6 +283,16 @@ func (m *Metrics) SetActiveRequests(count float64) {
 	m.ActiveRequests.Set(count)
 }
 
+// IncActiveRequests increments the active requests gauge by 1.
+func (m *Metrics) IncActiveRequests() {
+	m.ActiveRequests.Inc()
+}
+
+// DecActiveRequests decrements the active requests gauge by 1.
+func (m *Metrics) DecActiveRequests() {
+	m.ActiveRequests.Dec()
+}
+
 // SetActiveDownstreamRequests sets the current number of active downstream requests
 func (m *Metrics) SetActiveDownstreamRequests(model string, count float64) {
 	m.ActiveDownstreamRequests.WithLabelValues(model).Set(count)

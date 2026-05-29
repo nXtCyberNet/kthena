@@ -212,11 +212,11 @@ type ModelRequest map[string]interface{}
 
 func (r *Router) HandlerFunc() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		activeRequests := r.activeRequests.Add(1)
-		r.metrics.SetActiveRequests(float64(activeRequests))
+		r.activeRequests.Add(1)
+		r.metrics.IncActiveRequests()
 		defer func() {
-			activeRequests := r.activeRequests.Add(-1)
-			r.metrics.SetActiveRequests(float64(activeRequests))
+			r.activeRequests.Add(-1)
+			r.metrics.DecActiveRequests()
 		}()
 
 		// Handle /v1/models endpoint (OpenAI-compatible model listing)
