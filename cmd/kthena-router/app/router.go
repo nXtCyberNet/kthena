@@ -37,8 +37,10 @@ import (
 )
 
 const (
-	gracefulShutdownTimeout = 15 * time.Second
-	routerConfigFile        = "/etc/config/routerConfiguration.yaml"
+	gracefulShutdownTimeout       = 5 * time.Minute
+	debugShutdownTimeout          = 15 * time.Second
+	activeRequestDrainLogInterval = 5 * time.Second
+	routerConfigFile              = "/etc/config/routerConfiguration.yaml"
 )
 
 func NewRouter(store datastore.Store) *router.Router {
@@ -91,6 +93,8 @@ func (s *Server) startRouter(ctx context.Context, router *router.Router, store d
 			tlsMissingMsg:    "",
 			defaultRouter:    router,
 			readyCheck:       s.HasSynced,
+			activeRequests:   router.ActiveRequestCount,
+			shutdownWG:       &s.shutdownWG,
 			startLog:         fmt.Sprintf("Starting default server on port %s", s.Port),
 			shutdownStartLog: "Shutting down default HTTP server ...",
 			shutdownDoneLog:  "Default HTTP server exited",
@@ -155,15 +159,13 @@ func (s *Server) startDebugServer(ctx context.Context, store datastore.Store) {
 		}
 	}()
 
+	s.shutdownWG.Add(1)
 	go func() {
+		defer s.shutdownWG.Done()
 		<-ctx.Done()
-<<<<<<< HEAD
-		// graceful shutdown
-=======
 		// graceful shutdown with timeout as it does not handle real traffic
->>>>>>> 49cced6d (updated the gracefull shutown to see the current request count instead of terminating after 30sec)
 		klog.Info("Shutting down debug HTTP server ...")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), gracefulShutdownTimeout)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), debugShutdownTimeout)
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			klog.Errorf("Debug server shutdown failed: %v", err)
@@ -204,14 +206,9 @@ type listenerConfig struct {
 	tlsKeyFile    string
 	tlsMissingMsg string
 	// Default-server mode: health, metrics, /v1.
-<<<<<<< HEAD
-	defaultRouter *router.Router
-	readyCheck    func() bool
-=======
 	defaultRouter  *router.Router
 	readyCheck     func() bool
 	activeRequests func() int64
->>>>>>> 49cced6d (updated the gracefull shutown to see the current request count instead of terminating after 30sec)
 	// Gateway mode (non-nil => use gateway branch).
 	gateway          *listenerGatewayConfig
 	startLog         string
@@ -219,6 +216,7 @@ type listenerConfig struct {
 	shutdownDoneLog  string
 	logShutdownErr   func(err error)
 	logListenErr     func(err error)
+	shutdownWG       *sync.WaitGroup
 }
 
 // startListener: build Gin, listen, graceful shutdown on ctx.
@@ -309,12 +307,16 @@ func startListener(ctx context.Context, cfg listenerConfig) *http.Server {
 		}
 	}()
 
+	if cfg.shutdownWG != nil {
+		cfg.shutdownWG.Add(1)
+	}
 	go func() {
 		<-ctx.Done()
+		if cfg.shutdownWG != nil {
+			defer cfg.shutdownWG.Done()
+		}
 		klog.Info(cfg.shutdownStartLog)
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), gracefulShutdownTimeout)
-		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
+		if err := shutdownHTTPServer(srv, gracefulShutdownTimeout, cfg.activeRequests); err != nil {
 			cfg.logShutdownErr(err)
 		}
 		if cfg.shutdownDoneLog != "" {
@@ -323,6 +325,37 @@ func startListener(ctx context.Context, cfg listenerConfig) *http.Server {
 	}()
 
 	return srv
+}
+
+func shutdownHTTPServer(srv *http.Server, timeout time.Duration, activeRequests func() int64) error {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.Shutdown(shutdownCtx)
+	}()
+
+	if activeRequests == nil {
+		return <-errCh
+	}
+
+	ticker := time.NewTicker(activeRequestDrainLogInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case err := <-errCh:
+			if remaining := activeRequests(); remaining > 0 {
+				klog.Warningf("HTTP server shutdown completed with %d active requests remaining", remaining)
+			}
+			return err
+		case <-ticker.C:
+			if count := activeRequests(); count > 0 {
+				klog.Infof("Waiting for %d active router requests to drain", count)
+			}
+		}
+	}
 }
 
 // ListenerConfig represents a single listener configuration
@@ -516,6 +549,8 @@ func (lm *ListenerManager) addListenerToPort(port int32, config ListenerConfig, 
 			tlsKeyFile:       tlsKeyFile,
 			tlsMissingMsg:    fmt.Sprintf("TLS enabled but cert or key file not specified for port %d", port),
 			gateway:          &listenerGatewayConfig{lm: lm, port: port},
+			activeRequests:   lm.router.ActiveRequestCount,
+			shutdownWG:       &lm.server.shutdownWG,
 			startLog:         fmt.Sprintf("Starting Gateway listener server on port %d", port),
 			shutdownStartLog: fmt.Sprintf("Shutting down Gateway listener server on port %d ...", port),
 			shutdownDoneLog:  "",

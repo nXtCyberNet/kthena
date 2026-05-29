@@ -72,6 +72,7 @@ type Metrics struct {
 	RateLimitExceeded prometheus.CounterVec
 
 	// Request and scheduling metrics
+	ActiveRequests           prometheus.Gauge
 	ActiveDownstreamRequests prometheus.GaugeVec
 	ActiveUpstreamRequests   prometheus.GaugeVec
 	FairnessQueueSize        prometheus.GaugeVec
@@ -149,6 +150,13 @@ func NewMetrics() *Metrics {
 				Help: "Number of requests rejected due to rate limiting",
 			},
 			[]string{LabelModel, LabelLimitType, LabelPath},
+		),
+
+		ActiveRequests: promauto.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "kthena_router_active_requests",
+				Help: "Current number of active requests being handled by the router",
+			},
 		),
 
 		ActiveDownstreamRequests: *promauto.NewGaugeVec(
@@ -268,6 +276,11 @@ func (m *Metrics) RecordRateLimitExceeded(model, limitType, path string) {
 // RecordSchedulerPluginDuration records the processing time for a specific scheduler plugin
 func (m *Metrics) RecordSchedulerPluginDuration(model, pluginName, pluginType string, duration time.Duration) {
 	m.SchedulerPluginDuration.WithLabelValues(model, pluginName, pluginType).Observe(duration.Seconds())
+}
+
+// SetActiveRequests sets the current number of active router requests.
+func (m *Metrics) SetActiveRequests(count float64) {
+	m.ActiveRequests.Set(count)
 }
 
 // SetActiveDownstreamRequests sets the current number of active downstream requests
