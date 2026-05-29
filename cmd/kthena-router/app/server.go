@@ -19,7 +19,6 @@ package app
 import (
 	"context"
 	"os"
-	"sync"
 
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
@@ -41,7 +40,6 @@ type Server struct {
 	DebugPort                          int
 	KubeAPIQPS                         float32
 	KubeAPIBurst                       int
-	shutdownWG                         sync.WaitGroup
 }
 
 func NewServer(port string, enableTLS bool, cert, key string, enableGatewayAPI bool, enableGatewayAPIInferenceExtension bool, debugPort int, kubeAPIQPS float32, kubeAPIBurst int) *Server {
@@ -95,8 +93,6 @@ func (s *Server) Run(ctx context.Context) {
 	klog.Info("Router server started, waiting for shutdown signal...")
 	<-ctx.Done()
 	klog.Info("Router server shutting down...")
-	s.shutdownWG.Wait()
-	klog.Info("Router server shutdown complete")
 }
 
 func (s *Server) HasSynced() bool {

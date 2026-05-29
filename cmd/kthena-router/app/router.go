@@ -37,10 +37,12 @@ import (
 )
 
 const (
-	gracefulShutdownTimeout       = 5 * time.Minute
-	debugShutdownTimeout          = 15 * time.Second
-	activeRequestDrainLogInterval = 5 * time.Second
-	routerConfigFile              = "/etc/config/routerConfiguration.yaml"
+	// to check for in-flight requests during draining
+	drainPollInterval = 100 * time.Millisecond
+	// drainMaxWaitTime is the maximum time to wait for requests to drain before forcing shutdown
+	// Increased from 15s to 5min to allow long-running LLM inference requests to complete gracefully
+	drainMaxWaitTime = 5 * time.Minute
+	routerConfigFile = "/etc/config/routerConfiguration.yaml"
 )
 
 func NewRouter(store datastore.Store) *router.Router {
@@ -83,7 +85,6 @@ func (s *Server) startRouter(ctx context.Context, router *router.Router, store d
 			listenerManager.StartListenersForGateway(gw)
 		}
 	} else {
-		_ = store
 		// No Gateway API: default HTTP server.
 		startListener(ctx, listenerConfig{
 			addr:             ":" + s.Port,
@@ -94,7 +95,6 @@ func (s *Server) startRouter(ctx context.Context, router *router.Router, store d
 			defaultRouter:    router,
 			readyCheck:       s.HasSynced,
 			activeRequests:   router.ActiveRequestCount,
-			shutdownWG:       &s.shutdownWG,
 			startLog:         fmt.Sprintf("Starting default server on port %s", s.Port),
 			shutdownStartLog: "Shutting down default HTTP server ...",
 			shutdownDoneLog:  "Default HTTP server exited",
@@ -159,13 +159,11 @@ func (s *Server) startDebugServer(ctx context.Context, store datastore.Store) {
 		}
 	}()
 
-	s.shutdownWG.Add(1)
 	go func() {
-		defer s.shutdownWG.Done()
 		<-ctx.Done()
-		// graceful shutdown with timeout as it does not handle real traffic
+		// graceful shutdown with timeout to allow ongoing debug requests to complete
 		klog.Info("Shutting down debug HTTP server ...")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), debugShutdownTimeout)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			klog.Errorf("Debug server shutdown failed: %v", err)
@@ -189,6 +187,36 @@ func writeReadyzJSON(c *gin.Context, synced bool) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"message": "router is not ready",
 		})
+	}
+}
+
+// drainInFlightRequests polls the router request counter until all in-flight requests complete,
+// with a maximum wait time before forcing shutdown.
+func drainInFlightRequests(activeRequests func() int64) {
+	startTime := time.Now()
+	lastLog := startTime
+
+	for {
+		totalInFlight := activeRequests()
+
+		if totalInFlight == 0 {
+			klog.Info("All in-flight requests have completed")
+			return
+		}
+
+		// Log progress every 5 seconds
+		if time.Since(lastLog) >= 5*time.Second {
+			klog.Infof("Draining requests: %d in-flight, elapsed: %v", totalInFlight, time.Since(startTime))
+			lastLog = time.Now()
+		}
+
+		// Check if we've exceeded max wait time
+		if time.Since(startTime) > drainMaxWaitTime {
+			klog.Warningf("Drain timeout: %d requests still in-flight after %v, forcing shutdown", totalInFlight, drainMaxWaitTime)
+			return
+		}
+
+		time.Sleep(drainPollInterval)
 	}
 }
 
@@ -216,7 +244,6 @@ type listenerConfig struct {
 	shutdownDoneLog  string
 	logShutdownErr   func(err error)
 	logListenErr     func(err error)
-	shutdownWG       *sync.WaitGroup
 }
 
 // startListener: build Gin, listen, graceful shutdown on ctx.
@@ -307,16 +334,17 @@ func startListener(ctx context.Context, cfg listenerConfig) *http.Server {
 		}
 	}()
 
-	if cfg.shutdownWG != nil {
-		cfg.shutdownWG.Add(1)
-	}
 	go func() {
 		<-ctx.Done()
-		if cfg.shutdownWG != nil {
-			defer cfg.shutdownWG.Done()
-		}
 		klog.Info(cfg.shutdownStartLog)
-		if err := shutdownHTTPServer(srv, gracefulShutdownTimeout, cfg.activeRequests); err != nil {
+		// Graceful drain: wait for in-flight requests to complete
+		if cfg.activeRequests != nil {
+			drainInFlightRequests(cfg.activeRequests)
+		}
+		// Now shutdown the server (should have minimal in-flight at this point)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
 			cfg.logShutdownErr(err)
 		}
 		if cfg.shutdownDoneLog != "" {
@@ -325,37 +353,6 @@ func startListener(ctx context.Context, cfg listenerConfig) *http.Server {
 	}()
 
 	return srv
-}
-
-func shutdownHTTPServer(srv *http.Server, timeout time.Duration, activeRequests func() int64) error {
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- srv.Shutdown(shutdownCtx)
-	}()
-
-	if activeRequests == nil {
-		return <-errCh
-	}
-
-	ticker := time.NewTicker(activeRequestDrainLogInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case err := <-errCh:
-			if remaining := activeRequests(); remaining > 0 {
-				klog.Warningf("HTTP server shutdown completed with %d active requests remaining", remaining)
-			}
-			return err
-		case <-ticker.C:
-			if count := activeRequests(); count > 0 {
-				klog.Infof("Waiting for %d active router requests to drain", count)
-			}
-		}
-	}
 }
 
 // ListenerConfig represents a single listener configuration
@@ -550,7 +547,6 @@ func (lm *ListenerManager) addListenerToPort(port int32, config ListenerConfig, 
 			tlsMissingMsg:    fmt.Sprintf("TLS enabled but cert or key file not specified for port %d", port),
 			gateway:          &listenerGatewayConfig{lm: lm, port: port},
 			activeRequests:   lm.router.ActiveRequestCount,
-			shutdownWG:       &lm.server.shutdownWG,
 			startLog:         fmt.Sprintf("Starting Gateway listener server on port %d", port),
 			shutdownStartLog: fmt.Sprintf("Shutting down Gateway listener server on port %d ...", port),
 			shutdownDoneLog:  "",
