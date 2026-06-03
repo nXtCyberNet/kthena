@@ -1099,7 +1099,7 @@ func (s *store) DeleteModelRoute(namespacedName string) error {
 	s.triggerCallbacks("ModelRoute", EventData{
 		EventType:  EventDelete,
 		ModelName:  modelName,
-		ModelRoute: nil,
+		ModelRoute: deletedRoute,
 	})
 	return nil
 }
