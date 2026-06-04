@@ -72,7 +72,9 @@ type Metrics struct {
 	// Rate limiting metrics
 	RateLimitExceeded prometheus.CounterVec
 
-	// Request and scheduling metrics
+	// Request and scheduling metrics.
+	// activeRequests is the source of truth (inc/dec, shutdown drain count).
+	// ActiveRequests is the Prometheus GaugeFunc that reads activeRequests on scrape.
 	activeRequests               atomic.Int64
 	ActiveRequests               prometheus.GaugeFunc
 	RequestsBlockedByTermination prometheus.Counter
@@ -154,7 +156,6 @@ func NewMetrics() *Metrics {
 			},
 			[]string{LabelModel, LabelLimitType, LabelPath},
 		),
-
 
 		ActiveDownstreamRequests: *promauto.NewGaugeVec(
 			prometheus.GaugeOpts{

@@ -63,9 +63,10 @@ var (
 )
 
 const (
-	// defaultMetricsScrapeInterval is the default polling interval for pod metrics.
-	defaultMetricsScrapeInterval = 1 * time.Second
-	metricsScrapeIntervalEnv     = "METRICS_SCRAPE_INTERVAL"
+	// Configuration constants for fairness scheduling and store maintenance.
+	defaultQueueQPS          = 100
+	uppdateInterval          = 1 * time.Second // pod metrics scrape interval in store.Run
+	metricsScrapeIntervalEnv = "METRICS_SCRAPE_INTERVAL"
 
 	// onFlightSyncInterval caps Redis read traffic from SyncOnFlightCounts.
 	// At most one HMGET is issued per interval regardless of request rate;
@@ -472,10 +473,10 @@ func parseMetricsScrapeInterval() time.Duration {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			return d
 		} else {
-			klog.Warningf("Invalid %s: %q, using default %v", metricsScrapeIntervalEnv, v, defaultMetricsScrapeInterval)
+			klog.Warningf("Invalid %s: %q, using default %v", metricsScrapeIntervalEnv, v, uppdateInterval)
 		}
 	}
-	return defaultMetricsScrapeInterval
+	return uppdateInterval
 }
 
 func (s *store) Run(ctx context.Context) {
@@ -1783,7 +1784,6 @@ func (s *store) GetAllPods() map[types.NamespacedName]*PodInfo {
 	return result
 }
 
-
 // GetModelRoute returns a specific ModelRoute by namespacedName
 func (s *store) GetModelRoute(namespacedName string) *aiv1alpha1.ModelRoute {
 	s.routeMutex.RLock()
@@ -2060,4 +2060,3 @@ func (s *store) GetHTTPRoutesByGateway(gatewayKey string) []*gatewayv1.HTTPRoute
 	}
 	return result
 }
-

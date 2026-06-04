@@ -79,7 +79,7 @@ type Router struct {
 	loadRateLimiter *ratelimit.TokenRateLimiter
 	accessLogger    accesslog.AccessLogger
 	metrics         *metrics.Metrics
-	tokenizer        tokenizer.Tokenizer
+	tokenizer       tokenizer.Tokenizer
 
 	// KV Connector management
 	connectorFactory *connectors.Factory
