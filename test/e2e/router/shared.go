@@ -69,6 +69,45 @@ type pdDisaggregationFixtures struct {
 	modelRoute   string
 }
 
+func getCounterValue(metrics map[string]*dto.MetricFamily, metricName string, labels map[string]string) float64 {
+	mf, ok := metrics[metricName]
+	if !ok {
+		return 0
+	}
+	for _, m := range mf.GetMetric() {
+		if matchLabels(m.GetLabel(), labels) {
+			return m.GetCounter().GetValue()
+		}
+	}
+	return 0
+}
+
+func getHistogramCount(metrics map[string]*dto.MetricFamily, metricName string, labels map[string]string) uint64 {
+	mf, ok := metrics[metricName]
+	if !ok {
+		return 0
+	}
+	for _, m := range mf.GetMetric() {
+		if matchLabels(m.GetLabel(), labels) {
+			return m.GetHistogram().GetSampleCount()
+		}
+	}
+	return 0
+}
+
+func matchLabels(metricLabels []*dto.LabelPair, wantLabels map[string]string) bool {
+	labelMap := make(map[string]string)
+	for _, lp := range metricLabels {
+		labelMap[lp.GetName()] = lp.GetValue()
+	}
+	for k, v := range wantLabels {
+		if labelMap[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
 // WaitForKthenaRouterValidatingWebhook polls until a DryRun ModelRoute create reaches the
 // validating webhook (avoids flaky tests while cert-manager / deployment finishes).
 func WaitForKthenaRouterValidatingWebhook(t *testing.T, ctx context.Context, kthenaClient *clientset.Clientset, namespace string) {
@@ -925,8 +964,6 @@ func TestModelRouteWithRateLimitShared(t *testing.T, testCtx *routercontext.Rout
 			mr, err := testCtx.KthenaClient.NetworkingV1alpha1().ModelRoutes(testNamespace).Get(ctx, createdModelRoute.Name, metav1.GetOptions{})
 			return err == nil && mr != nil
 		}, 2*time.Minute, 2*time.Second, "ModelRoute should be created")
-
-
 
 		// Update ModelRoute to disable input token limit
 		createdModelRoute.Spec.RateLimit.InputTokensPerUnit = nil
