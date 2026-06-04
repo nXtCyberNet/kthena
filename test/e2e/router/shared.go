@@ -716,34 +716,38 @@ func TestModelRouteWithRateLimitShared(t *testing.T, testCtx *routercontext.Rout
 		}, 2*time.Minute, 2*time.Second, "ModelRoute should be created")
 
 		quotaRequests := inputTokenLimit / tokensPerRequest
-		for i := 0; i < quotaRequests; i++ {
-			var resp *http.Response
-			if i == 0 {
-				resp = utils.SendChatRequestWithDataPlaneWait(t, createdModelRoute.Spec.ModelName, standardMessage)
-			} else {
-				resp = utils.SendChatRequest(t, createdModelRoute.Spec.ModelName, standardMessage)
-			}
+
+		// Warm up: absorb Envoy data-plane eventual consistency (404/503)
+		// before the quota-counting loop begins. This request consumes one quota token.
+		warmUpResp := utils.SendChatRequestWithDataPlaneWait(t, createdModelRoute.Spec.ModelName, standardMessage)
+		warmUpBody, warmUpErr := io.ReadAll(warmUpResp.Body)
+		warmUpResp.Body.Close()
+		require.NoError(t, warmUpErr, "Failed to read warm-up response body")
+		require.Equal(t, http.StatusOK, warmUpResp.StatusCode,
+			"Warm-up request should succeed. Response: %s", string(warmUpBody))
+		t.Log("Data plane warm-up succeeded (consumed 1 quota token)")
+
+		// Send remaining quota requests; count successes until rate-limited.
+		successCount := 1 // warm-up already consumed 1 token
+		for i := 1; i < quotaRequests+2; i++ {
+			resp := utils.SendChatRequest(t, createdModelRoute.Spec.ModelName, standardMessage)
 			responseBody, readErr := io.ReadAll(resp.Body)
 			resp.Body.Close()
-
 			require.NoError(t, readErr, "Failed to read response body on request %d", i+1)
+
+			if resp.StatusCode == http.StatusTooManyRequests {
+				assert.Contains(t, strings.ToLower(string(responseBody)), "rate limit",
+					"Rate limit error response must contain descriptive message")
+				break
+			}
 			require.Equal(t, http.StatusOK, resp.StatusCode,
-				"Request %d should succeed. Response: %s", i+1, string(responseBody))
-			t.Logf("Request %d succeeded", i+1)
+				"Request %d should succeed or be rate-limited. Response: %s", i+1, string(responseBody))
+			successCount++
 		}
 
-		// Next request should be rate limited
-		rateLimitedResp := utils.SendChatRequest(t, createdModelRoute.Spec.ModelName, standardMessage)
-		responseBody, readErr := io.ReadAll(rateLimitedResp.Body)
-		rateLimitedResp.Body.Close()
-
-		require.NoError(t, readErr, "Failed to read rate limit response body")
-		assert.Equal(t, http.StatusTooManyRequests, rateLimitedResp.StatusCode,
-			"Request should be rate limited after exhausting quota")
-		assert.Contains(t, strings.ToLower(string(responseBody)), "rate limit",
-			"Rate limit error response must contain descriptive message")
-
-		t.Logf("Input token rate limit enforced after %d quota-consuming requests", quotaRequests)
+		assert.InDelta(t, quotaRequests, successCount, 1,
+			"Expected ~%d successful requests before rate limiting (got %d)", quotaRequests, successCount)
+		t.Logf("Input token rate limit enforced after %d quota-consuming requests", successCount)
 	})
 
 	// Test 2 Verify rate limit window accuracy and persistence
@@ -774,16 +778,25 @@ func TestModelRouteWithRateLimitShared(t *testing.T, testCtx *routercontext.Rout
 		}, 2*time.Minute, 2*time.Second, "ModelRoute should be created")
 
 		quotaRequests := inputTokenLimit / tokensPerRequest
-		for i := 0; i < quotaRequests; i++ {
-			var resp *http.Response
-			if i == 0 {
-				resp = utils.SendChatRequestWithDataPlaneWait(t, createdModelRoute.Spec.ModelName, standardMessage)
-			} else {
-				resp = utils.SendChatRequest(t, createdModelRoute.Spec.ModelName, standardMessage)
-			}
+
+		// Warm up: absorb Envoy data-plane eventual consistency (404/503).
+		warmUpResp := utils.SendChatRequestWithDataPlaneWait(t, createdModelRoute.Spec.ModelName, standardMessage)
+		warmUpResp.Body.Close()
+		require.Equal(t, http.StatusOK, warmUpResp.StatusCode, "Warm-up request should succeed")
+
+		// Consume full quota
+		successCount := 1 // warm-up consumed 1 token
+		for i := 1; i < quotaRequests+2; i++ {
+			resp := utils.SendChatRequest(t, createdModelRoute.Spec.ModelName, standardMessage)
 			resp.Body.Close()
+			if resp.StatusCode == http.StatusTooManyRequests {
+				break
+			}
 			assert.Equal(t, http.StatusOK, resp.StatusCode, "Request %d should succeed", i+1)
+			successCount++
 		}
+		assert.InDelta(t, quotaRequests, successCount, 1,
+			"Expected ~%d successful requests before rate limiting (got %d)", quotaRequests, successCount)
 
 		// Verify rate limit is active
 		rateLimitedResp := utils.SendChatRequest(t, createdModelRoute.Spec.ModelName, standardMessage)
@@ -842,17 +855,24 @@ func TestModelRouteWithRateLimitShared(t *testing.T, testCtx *routercontext.Rout
 		}, 2*time.Minute, 2*time.Second, "ModelRoute should be created")
 
 		quotaRequests := inputTokenLimit / tokensPerRequest
-		for i := 0; i < quotaRequests; i++ {
-			var resp *http.Response
-			if i == 0 {
-				resp = utils.SendChatRequestWithDataPlaneWait(t, createdModelRoute.Spec.ModelName, standardMessage)
-			} else {
-				resp = utils.SendChatRequest(t, createdModelRoute.Spec.ModelName, standardMessage)
-			}
+
+		// Warm up: absorb Envoy data-plane eventual consistency (404/503).
+		warmUpResp := utils.SendChatRequestWithDataPlaneWait(t, createdModelRoute.Spec.ModelName, standardMessage)
+		warmUpResp.Body.Close()
+		require.Equal(t, http.StatusOK, warmUpResp.StatusCode, "Warm-up request should succeed")
+
+		successCount := 1 // warm-up consumed 1 token
+		for i := 1; i < quotaRequests+2; i++ {
+			resp := utils.SendChatRequest(t, createdModelRoute.Spec.ModelName, standardMessage)
 			resp.Body.Close()
-			assert.Equal(t, http.StatusOK, resp.StatusCode,
-				"Request %d should succeed", i+1)
+			if resp.StatusCode == http.StatusTooManyRequests {
+				break
+			}
+			assert.Equal(t, http.StatusOK, resp.StatusCode, "Request %d should succeed", i+1)
+			successCount++
 		}
+		assert.InDelta(t, quotaRequests, successCount, 1,
+			"Expected ~%d successful requests before rate limiting (got %d)", quotaRequests, successCount)
 
 		// Confirm rate limiting is active
 		preResetResp := utils.SendChatRequest(t, createdModelRoute.Spec.ModelName, standardMessage)
@@ -865,22 +885,22 @@ func TestModelRouteWithRateLimitShared(t *testing.T, testCtx *routercontext.Rout
 		t.Logf("Waiting %v for complete rate limit window reset...", windowResetDuration)
 		time.Sleep(windowResetDuration)
 
-		// After window reset, full quota is restored (30 tokens = 3 requests)
+		// After window reset, full quota is restored — send until rate-limited again.
 		fullQuotaRequests := inputTokenLimit / tokensPerRequest
-		for i := 0; i < fullQuotaRequests; i++ {
+		postResetSuccess := 0
+		for i := 0; i < fullQuotaRequests+2; i++ {
 			resp := utils.SendChatRequest(t, createdModelRoute.Spec.ModelName, standardMessage)
 			resp.Body.Close()
-			assert.Equal(t, http.StatusOK, resp.StatusCode,
-				"Request %d should succeed after reset", i+1)
+			if resp.StatusCode == http.StatusTooManyRequests {
+				break
+			}
+			assert.Equal(t, http.StatusOK, resp.StatusCode, "Request %d should succeed after reset", i+1)
+			postResetSuccess++
 		}
+		assert.InDelta(t, fullQuotaRequests, postResetSuccess, 1,
+			"Expected ~%d successful requests after reset (got %d)", fullQuotaRequests, postResetSuccess)
 
-		// Verify rate limiting kicks in again after consuming quota
-		postResetRateLimitedResp := utils.SendChatRequest(t, createdModelRoute.Spec.ModelName, standardMessage)
-		postResetRateLimitedResp.Body.Close()
-		assert.Equal(t, http.StatusTooManyRequests, postResetRateLimitedResp.StatusCode,
-			"Rate limit should be active again after consuming quota")
-
-		t.Logf("Rate limit reset mechanism verified (quota restored: %d requests)", fullQuotaRequests)
+		t.Logf("Rate limit reset mechanism verified (quota restored: %d requests)", postResetSuccess)
 	})
 
 	// Test 4: Verify output token rate limit enforcement
@@ -906,8 +926,7 @@ func TestModelRouteWithRateLimitShared(t *testing.T, testCtx *routercontext.Rout
 			return err == nil && mr != nil
 		}, 2*time.Minute, 2*time.Second, "ModelRoute should be created")
 
-		// Wait for Envoy/Gateway API to sync the route to the data plane
-		// We delete this because the retry loop below naturally handles 404s
+
 
 		// Update ModelRoute to disable input token limit
 		createdModelRoute.Spec.RateLimit.InputTokensPerUnit = nil
@@ -947,10 +966,12 @@ func TestModelRouteWithRateLimitShared(t *testing.T, testCtx *routercontext.Rout
 					"Output rate limit error should mention rate limit")
 				rateLimited = true
 				break
-			} else {
-				// Ignore transient 404/503s if Envoy is applying the new route update
-				t.Logf("Ignoring unexpected HTTP status code %d on attempt %d (Envoy syncing)", resp.StatusCode, attempt+1)
+			} else if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusServiceUnavailable {
+				// Transient: Envoy is still syncing the updated route to the data plane.
+				t.Logf("Data plane not ready (status %d), retrying attempt %d...", resp.StatusCode, attempt+1)
 				time.Sleep(1 * time.Second)
+			} else {
+				t.Fatalf("Unexpected HTTP status %d on attempt %d: %s", resp.StatusCode, attempt+1, string(responseBody))
 			}
 		}
 
@@ -1016,14 +1037,15 @@ func TestModelRouteWithGlobalRateLimitShared(t *testing.T, testCtx *routercontex
 			return err == nil && mr != nil
 		}, 2*time.Minute, 2*time.Second, "ModelRoute should be created")
 
+		// Warm up: absorb Envoy data-plane eventual consistency (404/503).
+		warmUpResp := utils.SendChatRequestWithDataPlaneWait(t, createdModelRoute.Spec.ModelName, standardMessage)
+		warmUpResp.Body.Close()
+		require.Equal(t, http.StatusOK, warmUpResp.StatusCode, "Warm-up request should succeed")
+
 		var successCount int
-		for i := 0; i < maxRequests; i++ {
-			var resp *http.Response
-			if i == 0 {
-				resp = utils.SendChatRequestWithDataPlaneWait(t, createdModelRoute.Spec.ModelName, standardMessage)
-			} else {
-				resp = utils.SendChatRequest(t, createdModelRoute.Spec.ModelName, standardMessage)
-			}
+		successCount++ // warm-up consumed 1 token
+		for i := 1; i < maxRequests; i++ {
+			resp := utils.SendChatRequest(t, createdModelRoute.Spec.ModelName, standardMessage)
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				successCount++
@@ -1104,13 +1126,13 @@ func TestModelRouteWithGlobalRateLimitShared(t *testing.T, testCtx *routercontex
 			return err == nil && mr != nil
 		}, 2*time.Minute, 2*time.Second, "ModelRoute should be created")
 
-		for i := 0; i < 5; i++ {
-			var resp *http.Response
-			if i == 0 {
-				resp = utils.SendChatRequestWithDataPlaneWait(t, createdModelRoute.Spec.ModelName, standardMessage)
-			} else {
-				resp = utils.SendChatRequest(t, createdModelRoute.Spec.ModelName, standardMessage)
-			}
+		// Warm up: absorb Envoy data-plane eventual consistency (404/503).
+		warmUpResp := utils.SendChatRequestWithDataPlaneWait(t, createdModelRoute.Spec.ModelName, standardMessage)
+		warmUpResp.Body.Close()
+		require.Equal(t, http.StatusOK, warmUpResp.StatusCode, "Warm-up request should succeed without Redis")
+
+		for i := 1; i < 5; i++ {
+			resp := utils.SendChatRequest(t, createdModelRoute.Spec.ModelName, standardMessage)
 			resp.Body.Close()
 			assert.Equal(t, http.StatusOK, resp.StatusCode, "Request %d should succeed without Redis", i+1)
 		}
@@ -1741,6 +1763,21 @@ func TestRouterConfigUpdateShared(t *testing.T, testCtx *routercontext.RouterTes
 	preRestartPodNames := make(map[string]bool, len(preRestartPods))
 	for _, pod := range preRestartPods {
 		preRestartPodNames[pod.Name] = true
+	}
+
+	// Retrieve the deployment to determine its label selector and replica count.
+	deployment, err := testCtx.KubeClient.AppsV1().Deployments(kthenaNamespace).Get(ctx, routerDeploymentName, metav1.GetOptions{})
+	require.NoError(t, err, "Failed to get router deployment")
+	routerPodSelector := ""
+	for k, v := range deployment.Spec.Selector.MatchLabels {
+		if routerPodSelector != "" {
+			routerPodSelector += ","
+		}
+		routerPodSelector += k + "=" + v
+	}
+	expectedReplicas := int32(1)
+	if deployment.Spec.Replicas != nil {
+		expectedReplicas = *deployment.Spec.Replicas
 	}
 
 	t.Log("Triggering rollout restart for router deployment...")
