@@ -63,10 +63,9 @@ var (
 )
 
 const (
-	// Configuration constants for fairness scheduling and store maintenance.
-	defaultQueueQPS          = 100
-	uppdateInterval          = 1 * time.Second // pod metrics scrape interval in store.Run
-	metricsScrapeIntervalEnv = "METRICS_SCRAPE_INTERVAL"
+	// defaultMetricsScrapeInterval is the default polling interval for pod metrics.
+	defaultMetricsScrapeInterval = 1 * time.Second
+	metricsScrapeIntervalEnv     = "METRICS_SCRAPE_INTERVAL"
 
 	// onFlightSyncInterval caps Redis read traffic from SyncOnFlightCounts.
 	// At most one HMGET is issued per interval regardless of request rate;
