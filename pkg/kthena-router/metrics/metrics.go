@@ -75,13 +75,12 @@ type Metrics struct {
 	// Request and scheduling metrics.
 	// activeRequests is the source of truth (inc/dec, shutdown drain count).
 	// ActiveRequests is the Prometheus GaugeFunc that reads activeRequests on scrape.
-	activeRequests               atomic.Int64
-	ActiveRequests               prometheus.GaugeFunc
-	RequestsBlockedByTermination prometheus.Counter
-	ActiveDownstreamRequests     prometheus.GaugeVec
-	ActiveUpstreamRequests       prometheus.GaugeVec
-	FairnessQueueSize            prometheus.GaugeVec
-	FairnessQueueDuration        prometheus.HistogramVec
+	activeRequests           atomic.Int64
+	ActiveRequests           prometheus.GaugeFunc
+	ActiveDownstreamRequests prometheus.GaugeVec
+	ActiveUpstreamRequests   prometheus.GaugeVec
+	FairnessQueueSize        prometheus.GaugeVec
+	FairnessQueueDuration    prometheus.HistogramVec
 
 	// Fairness queue detailed metrics
 	FairnessQueueCancelledTotal       prometheus.CounterVec
@@ -249,13 +248,6 @@ func NewMetrics() *Metrics {
 		},
 	)
 
-	m.RequestsBlockedByTermination = promauto.NewCounter(
-		prometheus.CounterOpts{
-			Name: "kthena_router_requests_blocked_by_termination_total",
-			Help: "Total number of in-flight requests that were blocked/force-closed due to router termination",
-		},
-	)
-
 	return m
 }
 
@@ -313,13 +305,6 @@ func (m *Metrics) DecActiveRequests() {
 // ActiveRequestsCount returns the current value of the active requests atomic counter.
 func (m *Metrics) ActiveRequestsCount() int64 {
 	return m.activeRequests.Load()
-}
-
-// AddRequestsBlockedByTermination adds the count to the requests blocked by termination counter.
-func (m *Metrics) AddRequestsBlockedByTermination(count float64) {
-	if count > 0 {
-		m.RequestsBlockedByTermination.Add(count)
-	}
 }
 
 // SetActiveDownstreamRequests sets the current number of active downstream requests

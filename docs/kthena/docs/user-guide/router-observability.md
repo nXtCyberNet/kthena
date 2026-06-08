@@ -44,7 +44,6 @@ The debug endpoints (`/debug/config_dump/*`) are served on port **15000**.
 | `kthena_router_active_requests`                      | Gauge     | Currently active requests handled by the router              | —                                           | —                                                                       |
 | `kthena_router_active_downstream_requests`           | Gauge     | Currently active client requests                             | `model`                                     | —                                                                       |
 | `kthena_router_active_upstream_requests`             | Gauge     | Currently active requests to inference pods                  | `model_route`, `model_server`               | —                                                                       |
-| `kthena_router_requests_blocked_by_termination_total`| Counter   | In-flight requests force-closed after drain timeout on shutdown | —                                       | —                                                                       |
 
 ### Token & Usage Metrics
 

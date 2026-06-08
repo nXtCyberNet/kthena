@@ -34,7 +34,6 @@ import (
 
 	"github.com/volcano-sh/kthena/pkg/kthena-router/datastore"
 	"github.com/volcano-sh/kthena/pkg/kthena-router/debug"
-	"github.com/volcano-sh/kthena/pkg/kthena-router/metrics"
 	"github.com/volcano-sh/kthena/pkg/kthena-router/router"
 )
 
@@ -317,9 +316,6 @@ func startListener(ctx context.Context, cfg listenerConfig) *http.Server {
 				}
 				klog.Warningf("Drain timeout exceeded after %vs: %d requests still inflight, force-closing",
 					cfg.drainTimeout.Seconds(), remaining)
-				if remaining > 0 {
-					metrics.DefaultMetrics.AddRequestsBlockedByTermination(float64(remaining))
-				}
 				srv.Close()
 			} else {
 				cfg.logShutdownErr(err)
