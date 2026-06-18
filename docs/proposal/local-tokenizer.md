@@ -87,15 +87,23 @@ and make progress.
 
 2. **Operator Creates/Updates a `ModelServer`**  
    ```yaml
-   apiVersion: networking.volcano.sh/v1alpha1
-   kind: ModelServer
-   metadata:
-     name: qwen-3.5-server
-     annotations:
-       kthena.volcano.sh/tokenizer-enabled: "true"
-   spec:
-     model: "hf:Qwen/Qwen3.5-397B-A17B"
-     replicas: 2
+  apiVersion: networking.serving.volcano.sh/v1alpha1
+  kind: ModelServer
+  metadata:
+    name: deepseek-r1-7b
+    namespace: default
+    annotations:
+      kthena.volcano.sh/tokenizer-enabled: "true"
+  spec:
+    workloadSelector:
+      matchLabels:
+        app: deepseek-r1-7b
+    workloadPort:
+      port: 8000
+    model: "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+    inferenceEngine: "vLLM"
+    trafficPolicy:
+      timeout: 10s
    ```
 
    - The router’s `store.RegisterCallback` for `ModelServer` detects the event.
@@ -139,10 +147,7 @@ and make progress.
 kthenaRouter:
   tokenizerSidecar:
     enabled: true
-    failurePolicy: "Fallback"   # or "FailClosed"
     ```
-teh failurepolicy is based on the envirnment and sensitivity, 
-when selected failclosed - teh request will be failed because - if its not failed then the main point on accurate billing is failed.
 - The router performs a health check on startup and every 30 seconds:
   ```go
   http.Get("http://localhost:50051/v1/health")
@@ -180,7 +185,6 @@ metadata:
 kthenaRouter:
   tokenizerSidecar:
     enabled: false   # ← global toggle; if false, sidecar omitted
-    failurePolicy: "Fallback"   # or "FailClosed"
     image: tokenizer-sidecar:latest
     resources:
       requests: { memory: "128Mi", cpu: "50m" }
@@ -189,8 +193,6 @@ kthenaRouter:
 
 - When `enabled: false` – the router auto‑detects the missing sidecar and logs: `"Tokenizer sidecar not deployed, using heuristic"`.
 - When `enabled: true` – the sidecar is deployed; the router activates it per‑model via annotations.
-- when `failurePolicy: fallback` - the router will automatically switch to the haulistic method 
-- when `failurePolicy : failclosed ` - the router will automatically fail the request instead of falling to inaccurate method 
 ---
 
 <!--
@@ -210,7 +212,7 @@ A PaaS operator runs a multi-tenant LLM service. They need accurate token counts
 
 ### Story 2 Disable the sidecar entirely for resource-constrained development clusters
 
-A development team runs Kthena on a small, resource-constrained cluster (e.g., local Kind or minikube). They do not require accurate token counting for their testing workloads and want to minimize memory/CPU overhead.The operator sets a global Helm value to false and failurepolicy as failclosed . The router performs a health check on startup; when the sidecar is absent, it logs a clear message and seamlessly falls back to the native len(prompt) / 4 estimator for all models—even if individual ModelServer resources have the annotation (the annotation is safely ignored).
+A development team runs Kthena on a small, resource-constrained cluster (e.g., local Kind or minikube). They do not require accurate token counting for their testing workloads and want to minimize memory/CPU overhead.The operator sets a global Helm value to false . The router performs a health check on startup; when the sidecar is absent, it logs a clear message and seamlessly falls back to the native len(prompt) / 4 estimator for all models—even if individual ModelServer resources have the annotation (the annotation is safely ignored).
 
 #### Notes/Constraints/Caveats (Optional)
 - Memory Limits : Each loaded tokenizer consumes approximately 50–200MB of memory. The sidecar uses an LRU cache with a configurable max size (default: 5 tokenizers). Operators must set appropriate resources.limits.memory (default 1Gi) to avoid OOM kills.
