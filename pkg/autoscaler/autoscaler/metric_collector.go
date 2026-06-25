@@ -141,7 +141,6 @@ func (collector *MetricCollector) UpdateMetrics(
 	return
 }
 
-
 // planMetricSources groups pod-sourced metrics by identical scrape configuration
 // (so each pod endpoint is scraped once) and resolves prometheus-sourced metrics
 // immediately.

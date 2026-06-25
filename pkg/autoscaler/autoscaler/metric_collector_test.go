@@ -338,70 +338,112 @@ not a valid prometheus metric line
 	require.Error(t, err)
 }
 func TestCollectCounterMetric(t *testing.T) {
-	var scrapeCount int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/metrics", r.URL.Path)
-		w.WriteHeader(http.StatusOK)
-		if scrapeCount == 0 {
-			_, _ = io.WriteString(w, "# HELP my_counter A test counter\n# TYPE my_counter counter\nmy_counter 10\n")
-		} else {
-			_, _ = io.WriteString(w, "# HELP my_counter A test counter\n# TYPE my_counter counter\nmy_counter 30\n")
-		}
-		scrapeCount++
-	}))
-	defer srv.Close()
-
-	// Parse host and port from srv.URL (e.g. http://127.0.0.1:12345)
-	urlParts := strings.Split(strings.TrimPrefix(srv.URL, "http://"), ":")
-	require.Len(t, urlParts, 2)
-	ip := urlParts[0]
-	var port int32
-	_, err := fmt.Sscanf(urlParts[1], "%d", &port)
-	require.NoError(t, err)
-
-	collector := newTestCollector()
-	pod := &corev1.Pod{}
-	pod.Name = "pod-1"
-	pod.Status.PodIP = ip
-	pod.Status.StartTime = &metav1.Time{Time: time.Now().Add(-10 * time.Minute)}
-
-	podSource := &workload.PodMetricSource{
-		Uri:  "/metrics",
-		Port: port,
+	type want struct {
+		rate           float64
+		currentCounter float64
 	}
 
-	wanted := map[string][]string{
-		"my_counter": {"my_policy_key"},
+	cases := []struct {
+		name         string
+		firstScrape  float64
+		secondScrape float64
+		elapsedMs    int64
+		podRestarted bool
+		want         want
+	}{
+		{
+			name:         "counter delta rate calculation",
+			firstScrape:  10,
+			secondScrape: 30,
+			elapsedMs:    2000,
+			want:         want{rate: 10.0, currentCounter: 30.0},
+		},
+		{
+			name:         "counter reset handles rate of 0",
+			firstScrape:  30,
+			secondScrape: 10,
+			elapsedMs:    2000,
+			want:         want{rate: 0.0, currentCounter: 10.0},
+		},
+		{
+			name:         "pod restart resets baseline",
+			firstScrape:  10,
+			secondScrape: 30,
+			elapsedMs:    2000,
+			podRestarted: true,
+			want:         want{rate: 0.0, currentCounter: 30.0},
+		},
 	}
 
-	// First scrape
-	values := make(map[string]float64)
-	pastHistograms := make(map[string]HistogramInfo)
-	currentHistograms := make(map[string]HistogramInfo)
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			var scrapeCount int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				if scrapeCount == 0 {
+					fmt.Fprintf(w, "# HELP my_counter A test counter\n# TYPE my_counter counter\nmy_counter %g\n", tc.firstScrape)
+				} else {
+					fmt.Fprintf(w, "# HELP my_counter A test counter\n# TYPE my_counter counter\nmy_counter %g\n", tc.secondScrape)
+				}
+				scrapeCount++
+			}))
+			defer srv.Close()
 
-	err = collector.collectPodMetrics(context.Background(), pod, podSource, wanted, values, pastHistograms, currentHistograms)
-	require.NoError(t, err)
+			urlParts := strings.Split(strings.TrimPrefix(srv.URL, "http://"), ":")
+			require.Len(t, urlParts, 2)
+			ip := urlParts[0]
+			var port int32
+			_, err := fmt.Sscanf(urlParts[1], "%d", &port)
+			require.NoError(t, err)
 
-	assert.Equal(t, 0.0, values["my_policy_key"], "First scrape rate should be 0")
-	info, ok := currentHistograms[pod.Name]
-	require.True(t, ok)
-	assert.Equal(t, 10.0, info.CounterMap["my_policy_key"])
+			collector := newTestCollector()
+			pod := &corev1.Pod{}
+			pod.Name = "pod-1"
+			pod.Status.PodIP = ip
+			pod.Status.StartTime = &metav1.Time{Time: time.Now().Add(-10 * time.Minute)}
 
-	// Fake the scrape timestamp to be 2 seconds in the past
-	t1 := info.ScrapeTimestamp
-	info.ScrapeTimestamp = t1 - 2000
-	pastHistograms[pod.Name] = info
+			podSource := &workload.PodMetricSource{
+				Uri:  "/metrics",
+				Port: port,
+			}
 
-	// Second scrape
-	values = make(map[string]float64)
-	currentHistograms = make(map[string]HistogramInfo)
-	err = collector.collectPodMetrics(context.Background(), pod, podSource, wanted, values, pastHistograms, currentHistograms)
-	require.NoError(t, err)
+			wanted := map[string][]string{
+				"my_counter": {"my_policy_key"},
+			}
 
-	// Since we faked elapsed time to be 2000ms (2 seconds) and delta is 30 - 10 = 20,
-	// rate should be 20 / 2 = 10.
-	assert.InDelta(t, 10.0, values["my_policy_key"], 1e-2, "Rate should be delta / elapsed seconds")
-	info2, ok := currentHistograms[pod.Name]
-	require.True(t, ok)
-	assert.Equal(t, 30.0, info2.CounterMap["my_policy_key"])
+			// First scrape
+			values := make(map[string]float64)
+			pastPodMetrics := make(map[string]PodMetricsInfo)
+			currentPodMetrics := make(map[string]PodMetricsInfo)
+
+			err = collector.collectPodMetrics(context.Background(), pod, podSource, wanted, values, pastPodMetrics, currentPodMetrics)
+			require.NoError(t, err)
+
+			assert.Equal(t, 0.0, values["my_policy_key"])
+			info, ok := currentPodMetrics[pod.Name]
+			require.True(t, ok)
+			assert.Equal(t, tc.firstScrape, info.CounterMap["my_policy_key"])
+
+			// Fake the scrape timestamp
+			t1 := info.ScrapeTimestamp
+			info.ScrapeTimestamp = t1 - tc.elapsedMs
+			if tc.podRestarted {
+				// Change start time to simulate restart
+				pod.Status.StartTime = &metav1.Time{Time: time.Now()}
+			}
+			pastPodMetrics[pod.Name] = info
+
+			// Second scrape
+			values = make(map[string]float64)
+			currentPodMetrics = make(map[string]PodMetricsInfo)
+			err = collector.collectPodMetrics(context.Background(), pod, podSource, wanted, values, pastPodMetrics, currentPodMetrics)
+			require.NoError(t, err)
+
+			assert.InDelta(t, tc.want.rate, values["my_policy_key"], 1e-2)
+			info2, ok := currentPodMetrics[pod.Name]
+			require.True(t, ok)
+			assert.Equal(t, tc.want.currentCounter, info2.CounterMap["my_policy_key"])
+		})
+	}
 }
