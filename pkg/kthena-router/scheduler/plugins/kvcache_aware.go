@@ -37,6 +37,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/volcano-sh/kthena/pkg/kthena-router/datastore"
+	"github.com/volcano-sh/kthena/pkg/kthena-router/metrics"
 	"github.com/volcano-sh/kthena/pkg/kthena-router/scheduler/framework"
 	"github.com/volcano-sh/kthena/pkg/kthena-router/scheduler/plugins/tokenization"
 	"github.com/volcano-sh/kthena/pkg/kthena-router/utils"
@@ -206,8 +207,18 @@ func (t *KVCacheAware) Score(ctx *framework.Context, pods []*datastore.PodInfo) 
 	tokenizerDuration := time.Since(start)
 	klog.V(4).Infof("KVCacheAware.Score: tokenization took %v, tokens=%d, err=%v", tokenizerDuration, len(tokens), err)
 
-	if err != nil || len(tokens) == 0 {
-		klog.V(4).Infof("KVCacheAware.Score: early return — tokenization failed or empty (err=%v, tokens=%d)", err, len(tokens))
+	if err != nil {
+		if ctx.MetricsRecorder != nil {
+			ctx.MetricsRecorder.RecordKVCacheError(metrics.StageTokenize)
+		}
+		klog.V(4).Infof("KVCacheAware.Score: early return — tokenization failed (err=%v)", err)
+		return nil
+	}
+	if ctx.MetricsRecorder != nil {
+		ctx.MetricsRecorder.RecordKVCacheTokenizeDuration(tokenizerDuration)
+	}
+	if len(tokens) == 0 {
+		klog.V(4).Infof("KVCacheAware.Score: early return — empty token sequence")
 		return nil
 	}
 
@@ -223,13 +234,41 @@ func (t *KVCacheAware) Score(ctx *framework.Context, pods []*datastore.PodInfo) 
 	blockToPods, err := t.queryRedisForBlocks(blockHashes, ctx.Model)
 	redisDuration := time.Since(redisStart)
 	if err != nil {
+		if ctx.MetricsRecorder != nil {
+			ctx.MetricsRecorder.RecordKVCacheError(metrics.StageRedis)
+		}
 		klog.Warningf("KVCacheAware.Score: Redis query failed after %v: %v", redisDuration, err)
 		return nil
 	}
 	klog.V(4).Infof("KVCacheAware.Score: Redis query took %v, blocksWithHits=%d/%d",
 		redisDuration, len(blockToPods), len(blockHashes))
 
-	podScores := t.calculatePodScores(blockHashes, blockToPods)
+	if ctx.MetricsRecorder != nil {
+		ctx.MetricsRecorder.RecordKVCacheRedisDuration(redisDuration)
+	}
+
+	candidateNames := make(map[string]struct{}, len(pods))
+	for _, p := range pods {
+		candidateNames[p.GetPodNamespacedName().Name] = struct{}{}
+	}
+	for hash, podNames := range blockToPods {
+		kept := podNames[:0]
+		for _, name := range podNames {
+			if _, ok := candidateNames[name]; ok {
+				kept = append(kept, name)
+			}
+		}
+		if len(kept) == 0 {
+			delete(blockToPods, hash)
+		} else {
+			blockToPods[hash] = kept
+		}
+	}
+
+	podScores, longestMatch := t.calculatePodScores(blockHashes, blockToPods)
+	if ctx.MetricsRecorder != nil {
+		ctx.MetricsRecorder.RecordKVCacheMatchRatio(matchRatio(longestMatch, len(blockHashes)))
+	}
 	scoreResults := make(map[*datastore.PodInfo]int, len(podScores))
 	for _, pod := range pods {
 		podName := pod.GetPodNamespacedName().Name
@@ -308,18 +347,19 @@ func extractPodNameFromIdentifier(podIdentifier string) string {
 	return podIdentifier
 }
 
-func (t *KVCacheAware) calculatePodScores(blockHashes []uint64, blockToPods map[uint64][]string) map[string]int {
+// calculatePodScores returns per-pod scores and the longest block match length (used for the match_ratio metric).
+func (t *KVCacheAware) calculatePodScores(blockHashes []uint64, blockToPods map[uint64][]string) (map[string]int, int) {
 	podScores := make(map[string]int)
 
 	if len(blockHashes) == 0 {
 		klog.V(4).Infof("KVCacheAware.calculateScores: no block hashes to process")
-		return podScores
+		return podScores, 0
 	}
 
 	firstBlockPods, exists := blockToPods[blockHashes[0]]
 	if !exists || len(firstBlockPods) == 0 {
 		klog.V(4).Infof("KVCacheAware.calculateScores: first block hash=%d has no cached pods — all scores 0", blockHashes[0])
-		return podScores
+		return podScores, 0
 	}
 
 	klog.V(4).Infof("KVCacheAware.calculateScores: first block matched pods=%v, starting prefix matching across %d blocks",
@@ -365,6 +405,7 @@ func (t *KVCacheAware) calculatePodScores(blockHashes []uint64, blockToPods map[
 	klog.V(4).Infof("KVCacheAware.calculateScores: prefix matching ended at block %d/%d, scoring %d pods",
 		lastMatchedBlock+1, totalBlocks, len(podScores))
 
+	longestMatch := lastMatchedBlock + 1
 	for podName, matchLen := range podScores {
 		score := int((float64(matchLen) / float64(totalBlocks)) * 100)
 		podScores[podName] = score
@@ -372,7 +413,7 @@ func (t *KVCacheAware) calculatePodScores(blockHashes []uint64, blockToPods map[
 			podName, matchLen, totalBlocks, score)
 	}
 
-	return podScores
+	return podScores, longestMatch
 }
 
 func (tbp *TokenBlockProcessor) TokensToBlockHashes(tokens []uint32, maxBlocks int) []uint64 {
