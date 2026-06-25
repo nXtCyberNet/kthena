@@ -66,24 +66,13 @@ type LimiterConfig struct {
 	GlobalRedisAddress string // empty if local
 }
 
-// InputLimiterConfig wraps LimiterConfig for input-specific storage
-type InputLimiterConfig struct {
-	*LimiterConfig
-}
-
-// OutputLimiterConfig wraps LimiterConfig for output-specific storage
-type OutputLimiterConfig struct {
-	*LimiterConfig
-	HasLimit bool // whether output limit is configured
-}
-
 // TokenRateLimiter provides rate limiting functionality for both input and output tokens
 type TokenRateLimiter struct {
 	mutex sync.RWMutex
 
 	// Store input and output limiters separately for independent change detection
-	inputLimiters  map[string]*InputLimiterConfig
-	outputLimiters map[string]*OutputLimiterConfig
+	inputLimiters  map[string]*LimiterConfig
+	outputLimiters map[string]*LimiterConfig
 
 	// Redis client for global rate limiting
 	redisClient *redis.Client
@@ -111,8 +100,8 @@ func (l *LocalLimiter) Tokens() float64 {
 // NewTokenRateLimiter creates a new TokenRateLimiter instance
 func NewTokenRateLimiter() *TokenRateLimiter {
 	return &TokenRateLimiter{
-		inputLimiters:  make(map[string]*InputLimiterConfig),
-		outputLimiters: make(map[string]*OutputLimiterConfig),
+		inputLimiters:  make(map[string]*LimiterConfig),
+		outputLimiters: make(map[string]*LimiterConfig),
 		tokenizer:      tokenizer.NewSimpleEstimateTokenizer(),
 	}
 }
@@ -139,7 +128,7 @@ func (r *TokenRateLimiter) RateLimit(model, prompt string) error {
 
 	// Check output token rate limit - verify tokens are available
 	// Actual consumption happens in RecordOutputTokens() with proper reservation handling
-	if hasOutputLimit && outputConfig.HasLimit && outputConfig.Limiter != nil {
+	if hasOutputLimit && outputConfig.Limiter != nil {
 		// Non-consuming check: ensure at least 1 token available
 		if outputConfig.Limiter.Tokens() < 1 {
 			return &OutputRateLimitExceededError{}
@@ -155,7 +144,7 @@ func (r *TokenRateLimiter) RecordOutputTokens(model string, tokenCount int) {
 	outputConfig, exists := r.outputLimiters[model]
 	r.mutex.RUnlock()
 
-	if !exists || !outputConfig.HasLimit || outputConfig.Limiter == nil {
+	if !exists || outputConfig.Limiter == nil {
 		return
 	}
 	if localLimiter, ok := outputConfig.Limiter.(*LocalLimiter); ok {
@@ -210,7 +199,7 @@ func (r *TokenRateLimiter) AddOrUpdateLimiter(model string, ratelimit *networkin
 	}
 
 	// Helper: check if input config has changed
-	inputConfigChanged := func(oldConfig *InputLimiterConfig) bool {
+	inputConfigChanged := func(oldConfig *LimiterConfig) bool {
 		if oldConfig == nil {
 			return ratelimit.InputTokensPerUnit != nil // changed if new limit added
 		}
@@ -228,8 +217,8 @@ func (r *TokenRateLimiter) AddOrUpdateLimiter(model string, ratelimit *networkin
 	}
 
 	// Helper: check if output config has changed
-	outputConfigChanged := func(oldConfig *OutputLimiterConfig) bool {
-		if oldConfig == nil || !oldConfig.HasLimit {
+	outputConfigChanged := func(oldConfig *LimiterConfig) bool {
+		if oldConfig == nil {
 			return ratelimit.OutputTokensPerUnit != nil // changed if new limit added
 		}
 		if ratelimit.OutputTokensPerUnit == nil {
@@ -270,14 +259,12 @@ func (r *TokenRateLimiter) AddOrUpdateLimiter(model string, ratelimit *networkin
 				)
 			}
 
-			r.inputLimiters[model] = &InputLimiterConfig{
-				LimiterConfig: &LimiterConfig{
-					Limiter:            newLimiter,
-					TokensPerUnit:      *ratelimit.InputTokensPerUnit, // copied value
-					Unit:               ratelimit.Unit,
-					IsGlobal:           useGlobal,
-					GlobalRedisAddress: redisAddr,
-				},
+			r.inputLimiters[model] = &LimiterConfig{
+				Limiter:            newLimiter,
+				TokensPerUnit:      *ratelimit.InputTokensPerUnit, // copied value
+				Unit:               ratelimit.Unit,
+				IsGlobal:           useGlobal,
+				GlobalRedisAddress: redisAddr,
 			}
 		}
 		// If config hasn't changed, keep existing limiter with its state
@@ -311,15 +298,12 @@ func (r *TokenRateLimiter) AddOrUpdateLimiter(model string, ratelimit *networkin
 				)
 			}
 
-			r.outputLimiters[model] = &OutputLimiterConfig{
-				LimiterConfig: &LimiterConfig{
-					Limiter:            newLimiter,
-					TokensPerUnit:      *ratelimit.OutputTokensPerUnit, // copied value
-					Unit:               ratelimit.Unit,
-					IsGlobal:           useGlobal,
-					GlobalRedisAddress: redisAddr,
-				},
-				HasLimit: true,
+			r.outputLimiters[model] = &LimiterConfig{
+				Limiter:            newLimiter,
+				TokensPerUnit:      *ratelimit.OutputTokensPerUnit, // copied value
+				Unit:               ratelimit.Unit,
+				IsGlobal:           useGlobal,
+				GlobalRedisAddress: redisAddr,
 			}
 		}
 		// If config hasn't changed, keep existing limiter with its state
